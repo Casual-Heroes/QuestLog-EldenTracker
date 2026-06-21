@@ -71,8 +71,6 @@ class Detector:
     def _init_ocr(self):
         try:
             self._ocr_reader = _load_ocr()
-            # Warm up JIT — first inference is slow, do it on a blank so real deaths aren't missed
-            self._ocr_reader.readtext(np.zeros((64, 256), dtype=np.uint8), detail=0)
             self._ocr_ready  = True
             log.info("OCR ready — YOU DIED detection active.")
             self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True)

@@ -88,8 +88,9 @@ class App(QMainWindow):
         def on_death():
             self._deaths.record_death()
             s, d = self._session, self._deaths
-            log.info("DEATH  session=%d  total=%d  rage=%d%% (%s)",
-                     s.session_deaths, s.total_deaths, *d.rage_state())
+            pct, state, _ = d.rage_state()
+            log.info("DEATH  session=%d  total=%d  rage=%d%%  %s",
+                     s.session_deaths, s.total_deaths, pct, state)
 
         def on_kill(tier=None):
             from games.registry import ENEMY
