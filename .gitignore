@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Runtime data — user-specific, not versioned
+data/runs/
+data/logs/
+data/active_run.json
+data/bosses.json
+data/session.json
+overlay/stats.json
+
+# Keep settings template but not user's actual settings
+data/settings.json
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# PyInstaller
+*.spec
+dist/
+build/
+
+# easyocr model cache (downloaded on first run)
+.EasyOCR/
+
+# Backups and archives
+*.zip
+*_backup*/
+*_backup_*/

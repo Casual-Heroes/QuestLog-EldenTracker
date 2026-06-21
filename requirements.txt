@@ -1,0 +1,8 @@
+psutil
+keyboard
+mss
+numpy
+Pillow
+easyocr
+PyQt6
+pyinstaller
