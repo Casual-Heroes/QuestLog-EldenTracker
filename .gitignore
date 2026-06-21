@@ -37,7 +37,6 @@ Thumbs.db
 desktop.ini
 
 # PyInstaller
-*.spec
 dist/
 build/
 

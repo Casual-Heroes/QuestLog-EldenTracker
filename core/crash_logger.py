@@ -26,11 +26,11 @@ def setup():
     )
 
     fh = logging.FileHandler(_LOG_FILE, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
 
     sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(logging.DEBUG)
+    sh.setLevel(logging.INFO)
     sh.setFormatter(fmt)
 
     root = logging.getLogger()
