@@ -56,6 +56,11 @@ class BossTracker:
             self.bosses[key]["defeated"] = False
             self.save()
 
+    def reset_all(self):
+        for b in self.bosses.values():
+            b["defeated"] = False
+        self.save()
+
     def defeated_count(self):
         return sum(1 for b in self.bosses.values() if b["defeated"])
 

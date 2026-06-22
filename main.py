@@ -1,8 +1,9 @@
 import sys
 import os
+import threading
+import http.server
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts.warning=false"
 
-# Tell Windows this is its own app (not python.exe) so the taskbar shows our icon
 if sys.platform == "win32":
     import ctypes
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("casualheroes.questlog.mortalitytracker")
@@ -11,10 +12,11 @@ import core.crash_logger as crash_logger
 crash_logger.setup()
 log = crash_logger.get_logger("questlog.main")
 
-from PyQt6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
 
+from core.paths import assets as _assets_path, overlay as _overlay_path
 from core.run import load_run_meta, get_run_dir, save_active_slug, load_active_slug
 from core.session import Session
 from core.deaths import DeathTracker
@@ -26,42 +28,59 @@ from gui.run_selector import RunSelectorWidget
 from gui.boss_tracker import BossTrackerWindow
 
 TICK_MS = 1000
+OVERLAY_PORT = 8765
 
 
-class App(QMainWindow):
-    def __init__(self):
+def _start_overlay_server():
+    overlay_dir = _overlay_path()
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=overlay_dir, **kwargs)
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        httpd = http.server.HTTPServer(("localhost", OVERLAY_PORT), _Handler)
+        log.info("Overlay server: http://localhost:%d/index.html", OVERLAY_PORT)
+        httpd.serve_forever()
+    except OSError:
+        log.warning("Overlay port %d already in use — skipping server.", OVERLAY_PORT)
+
+
+class SelectorWindow(QMainWindow):
+    """Thin wrapper so the run selector is a proper top-level window."""
+    def __init__(self, app_controller):
         super().__init__()
+        self._app = app_controller
         self.setWindowTitle("QuestLog Mortality Tracker")
         self.setMinimumSize(600, 720)
+        self._widget = RunSelectorWidget()
+        self._widget.run_selected.connect(self._app._launch_run)
+        self._widget.run_deleted.connect(self._app._on_run_deleted)
+        self.setCentralWidget(self._widget)
 
-        self._stack    = QStackedWidget()
-        self.setCentralWidget(self._stack)
+    def closeEvent(self, event):
+        self._app._shutdown()
+        event.accept()
 
-        self._selector  = RunSelectorWidget()
-        self._tracker   = None   # BossTrackerWindow — built when run is selected
-        self._detector  = None
-        self._session   = None
-        self._deaths    = None
-        self._bosses    = None
-        self._run_dir    = None
-        self._rage_label = "Rage Index"
-        self._timer      = QTimer()
+
+class App:
+    def __init__(self):
+        self._selector_win = SelectorWindow(self)
+        self._tracker      = None
+        self._detector     = None
+        self._session      = None
+        self._deaths       = None
+        self._bosses       = None
+        self._run_dir      = None
+        self._rage_label   = "Rage Index"
+        self._timer        = QTimer()
         self._timer.timeout.connect(self._tick)
 
-        self._selector.run_selected.connect(self._launch_run)
-        self._selector.run_deleted.connect(self._on_run_deleted)
-        self._stack.addWidget(self._selector)
-        self._stack.setCurrentWidget(self._selector)
-
-        # Resume last active run automatically if it exists
-        last = load_active_slug()
-        if last:
-            try:
-                load_run_meta(last)   # verify it still exists
-                self._launch_run(last)
-                return
-            except Exception:
-                log.warning("Could not resume last run '%s' — starting fresh.", last)
+    def start(self):
+        self._selector_win.show()
 
     def _launch_run(self, slug):
         log.info("Launching run: %s", slug)
@@ -78,7 +97,7 @@ class App(QMainWindow):
             return
 
         save_active_slug(slug)
-        self._run_dir   = run_dir
+        self._run_dir    = run_dir
         self._rage_label = game_meta.get("rage_label", "Rage Index")
 
         self._session = Session(process_name=game_meta["process"], run_dir=run_dir)
@@ -112,7 +131,13 @@ class App(QMainWindow):
         log.info("=== Mortality Tracker — %s  [%s / %s] ===", meta["name"], game_id, mode_id)
         log.info("Hotkeys: F9=Death  F10=Kill  F8=Hold 3s to reset")
 
-        tracker_win = BossTrackerWindow(
+        tracker = self._tracker
+        self._tracker = None
+        if tracker:
+            tracker.close()
+            tracker.deleteLater()
+
+        self._tracker = BossTrackerWindow(
             self._bosses,
             run_meta=meta,
             session=self._session,
@@ -120,41 +145,38 @@ class App(QMainWindow):
             on_kill=on_kill,
             rage_label=self._rage_label,
         )
-        tracker_win.switch_run.connect(self._go_to_selector)
-
-        if self._tracker:
-            self._stack.removeWidget(self._tracker)
-            self._tracker.deleteLater()
-
-        self._tracker = tracker_win
-        self._stack.addWidget(self._tracker)
-        self._stack.setCurrentWidget(self._tracker)
-        self.setWindowTitle(f"QuestLog Mortality Tracker — {meta['name']}")
+        self._tracker.switch_run.connect(self._go_to_selector)
+        self._tracker.settings_tab.monitor_changed.connect(self._detector.set_monitor)
+        self._tracker.show()
+        self._selector_win.hide()
 
         self._timer.start(TICK_MS)
 
     def _on_run_deleted(self, slug):
-        # If the deleted run is the active one, stop it cleanly before rmtree runs
         if self._run_dir and slug in self._run_dir.replace("\\", "/"):
             self._stop_active()
-            # Null everything out so the tick loop can't write to the deleted path
             self._run_dir    = None
             self._rage_label = "Rage Index"
             self._session    = None
             self._deaths     = None
             self._bosses     = None
-            if self._tracker:
-                self._stack.removeWidget(self._tracker)
-                self._tracker.deleteLater()
-                self._tracker = None
-            self._stack.setCurrentWidget(self._selector)
-            self.setWindowTitle("QuestLog Mortality Tracker")
+            tracker = self._tracker
+            self._tracker = None
+            if tracker:
+                tracker.close()
+                tracker.deleteLater()
+            self._selector_win._widget._populate_runs()
+            self._selector_win.show()
 
     def _go_to_selector(self):
         self._stop_active()
-        self._selector._populate_runs()
-        self._stack.setCurrentWidget(self._selector)
-        self.setWindowTitle("QuestLog Mortality Tracker")
+        tracker = self._tracker
+        self._tracker = None
+        if tracker:
+            tracker.close()
+            tracker.deleteLater()
+        self._selector_win._widget._populate_runs()
+        self._selector_win.show()
 
     def _stop_active(self):
         self._timer.stop()
@@ -189,20 +211,26 @@ class App(QMainWindow):
         except Exception:
             log.exception("Error in tick loop")
 
-    def closeEvent(self, event):
+    def _shutdown(self):
         log.info("Shutting down.")
         self._stop_active()
-        event.accept()
+        tracker = self._tracker
+        self._tracker = None
+        if tracker:
+            tracker.close()
+        QApplication.quit()
 
 
 def main():
+    t = threading.Thread(target=_start_overlay_server, daemon=True)
+    t.start()
+
     try:
         app = QApplication(sys.argv)
-        app.setQuitOnLastWindowClosed(True)
-        _icon_path = os.path.join(os.path.dirname(__file__), "assets", "QL1.ico")
-        app.setWindowIcon(QIcon(_icon_path))
-        win = App()
-        win.show()
+        app.setQuitOnLastWindowClosed(False)
+        app.setWindowIcon(QIcon(_assets_path("QL1.ico")))
+        controller = App()
+        controller.start()
         sys.exit(app.exec())
     except Exception:
         log.exception("Fatal error in main()")

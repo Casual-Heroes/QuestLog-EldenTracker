@@ -6,7 +6,8 @@ import platform
 import datetime
 
 # Logs live in data/logs/ alongside runs and settings
-_BASE_DIR  = os.path.join(os.path.dirname(__file__), "..", "data", "logs")
+from core.paths import data as _data_path
+_BASE_DIR  = _data_path("logs")
 _LOG_FILE  = None   # set by setup()
 _LOGGER    = logging.getLogger("questlog")
 

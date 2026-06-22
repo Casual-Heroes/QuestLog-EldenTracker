@@ -48,6 +48,17 @@ class DeathTracker:
             if self._rage_pct >= 100:
                 self._hollow_streak = 0
 
+    def subtract_death(self):
+        if self.session.total_deaths > 0:
+            self.session.total_deaths   = max(0, self.session.total_deaths - 1)
+        if self.session.session_deaths > 0:
+            self.session.session_deaths = max(0, self.session.session_deaths - 1)
+        if self._death_times:
+            self._death_times.pop()
+        self._rage_pct    = max(0.0, self._rage_pct - 25)
+        self._consecutive = max(0, self._consecutive - 1)
+        self.session.save()
+
     def record_kill(self, tier=TIER_ENEMY):
         decay = TIER_DECAY.get(tier, 25)
 

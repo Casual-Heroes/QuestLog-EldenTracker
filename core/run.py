@@ -3,7 +3,8 @@ import os
 import re
 import time
 
-RUNS_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "runs")
+from core.paths import data as _data_path
+RUNS_DIR = _data_path("runs")
 
 
 def _slug(name):

@@ -25,6 +25,55 @@ YOU_DIED_TEXT = "you died"
 _YOU_DIED_RE  = re.compile(r'[xyv]?[yoeui][a-z#]{0,4}\s?d[a-z]?[ti]?ed')
 
 
+def _find_game_monitor(title_keyword, sct):
+    """
+    Returns the mss monitor index (1-based) within the given sct context that
+    contains the window whose title matches title_keyword.
+    Uses only Win32 window/monitor APIs — no screen scanning.
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        user32 = ctypes.windll.user32
+        found_rect = None
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+
+        def _cb(hwnd, _):
+            nonlocal found_rect
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length == 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if title_keyword.lower() in buf.value.lower():
+                rect = wt.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                found_rect = rect
+                return False
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(_cb), 0)
+
+        if found_rect is None:
+            log.info("Game window '%s' not found — using primary monitor", title_keyword)
+            return None
+
+        cx = (found_rect.left + found_rect.right) // 2
+        cy = (found_rect.top + found_rect.bottom) // 2
+
+        for i, m in enumerate(sct.monitors[1:], start=1):
+            if (m["left"] <= cx < m["left"] + m["width"] and
+                    m["top"] <= cy < m["top"] + m["height"]):
+                log.info("Auto-detected game on monitor [%d]", i)
+                return i
+    except Exception:
+        pass
+    return None
+
+
 def _load_ocr():
     import warnings
     warnings.filterwarnings("ignore", message="'pin_memory'")
@@ -33,11 +82,11 @@ def _load_ocr():
 
 
 class Detector:
-    def __init__(self, death_tracker, on_death=None, on_kill=None, on_grace=None, on_reset=None):
+    def __init__(self, death_tracker, on_death=None, on_kill=None, on_grace=None, on_reset=None, monitor=None, game_title="ELDEN RING"):
         self.death_tracker = death_tracker
-        self.on_death = on_death or (lambda: None)
-        self.on_kill  = on_kill  or (lambda: None)
-        self.on_reset = on_reset or (lambda: None)
+        self.on_death  = on_death or (lambda: None)
+        self.on_kill   = on_kill  or (lambda: None)
+        self.on_reset  = on_reset or (lambda: None)
         self._running          = False
         self._ocr_thread       = None
         self._ocr_reader       = None
@@ -46,6 +95,17 @@ class Detector:
         self._last_kill_time   = 0
         self._in_death_screen  = False
         self._reset_hold_start = None
+        self._game_title            = game_title
+        self._monitor_override      = monitor  # None = auto-detect
+        self._force_monitor_recheck = False
+
+    def set_monitor(self, index):
+        self._monitor_override = index
+        self._force_monitor_recheck = True
+        if index is None:
+            log.info("Game monitor set to auto-detect")
+        else:
+            log.info("Game monitor manually overridden to %d", index)
 
     def start(self):
         self._running = True
@@ -104,28 +164,31 @@ class Detector:
                 return
             time.sleep(0.05)
 
-    def _is_game_foreground(self):
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.GetForegroundWindow()
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            buf = ctypes.create_unicode_buffer(length + 1)
-            ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = buf.value.lower()
-            return "elden ring" in title
-        except Exception:
-            return True
+    def _resolve_monitor(self, sct):
+        n = len(sct.monitors) - 1  # number of real monitors (index 0 is virtual combined)
+        if self._monitor_override is not None:
+            return max(1, min(self._monitor_override, n))
+        detected = _find_game_monitor(self._game_title, sct)
+        if detected is not None:
+            return max(1, min(detected, n))
+        for i, m in enumerate(sct.monitors[1:], start=1):
+            if m["left"] == 0 and m["top"] == 0:
+                return i
+        return 1
 
     def _ocr_loop(self):
+        _cached_monitor_idx = None
         with mss.mss() as sct:
             while self._running:
                 try:
-                    if not self._is_game_foreground():
-                        self._in_death_screen = False
-                        time.sleep(POLL_INTERVAL)
-                        continue
-
-                    monitor = sct.monitors[1]
+                    if _cached_monitor_idx is None or self._force_monitor_recheck:
+                        self._force_monitor_recheck = False
+                        _cached_monitor_idx = min(self._resolve_monitor(sct), len(sct.monitors) - 1)
+                        log.info("Scanning monitor [%d]: %dx%d",
+                                 _cached_monitor_idx,
+                                 sct.monitors[_cached_monitor_idx]["width"],
+                                 sct.monitors[_cached_monitor_idx]["height"])
+                    monitor = sct.monitors[_cached_monitor_idx]
                     region  = self._get_region(monitor)
                     img     = np.array(sct.grab(region))[:, :, :3]
                     text    = self._run_ocr(img)

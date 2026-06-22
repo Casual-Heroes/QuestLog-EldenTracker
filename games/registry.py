@@ -17,7 +17,8 @@ TIER_DECAY = {
     GOD:         999,
 }
 
-GAMES_DIR = os.path.dirname(__file__)
+from core.paths import games as _games_path
+GAMES_DIR = _games_path()
 
 
 def list_games():

@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QFont, QPixmap, QDesktopServices
 
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
-LOGO_QL    = os.path.join(ASSETS_DIR, "QL1.png")
-LOGO_CH    = os.path.join(ASSETS_DIR, "CH.png")
+from core.paths import assets as _assets_path
+LOGO_QL = _assets_path("QL1.png")
+LOGO_CH = _assets_path("CH.png")
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
 

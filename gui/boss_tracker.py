@@ -5,19 +5,19 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QScrollArea, QLabel, QCheckBox, QLineEdit,
     QPushButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QSlider, QSpacerItem
+    QSlider, QSpacerItem, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QUrl
 from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QDesktopServices, QIcon
 
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
-LOGO_QL     = os.path.join(ASSETS_DIR, "QL1.png")
-LOGO_QL_ICO = os.path.join(ASSETS_DIR, "QL1.ico")
-LOGO_CH    = os.path.join(ASSETS_DIR, "CH.png")
-SITE_URL   = "https://questlog.casual-heroes.com"
-GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
+from core.paths import assets as _assets_path, data as _data_path
+LOGO_QL     = _assets_path("QL1.png")
+LOGO_QL_ICO = _assets_path("QL1.ico")
+LOGO_CH     = _assets_path("CH.png")
+SITE_URL    = "https://questlog.casual-heroes.com"
+GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
 
-SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "settings.json")
+SETTINGS_FILE = _data_path("settings.json")
 
 # ── Palette ────────────────────────────────────────────────────────────────
 BG_BASE      = "#09090f"
@@ -391,6 +391,11 @@ class BossTab(QWidget):
 
 
 class MortalityTab(QWidget):
+    sig_add_death      = pyqtSignal()
+    sig_subtract_death = pyqtSignal()
+    sig_reset_deaths   = pyqtSignal()
+    sig_reset_bosses   = pyqtSignal()
+
     def __init__(self, session=None, deaths=None, rage_label="Rage Index", parent=None):
         super().__init__(parent)
         self._session = session
@@ -471,6 +476,51 @@ class MortalityTab(QWidget):
 
         outer.addStretch()
 
+        # ── Manual controls ───────────────────────────────────────
+        def _action_btn(label, color=None):
+            btn = QPushButton(label)
+            btn.setFixedHeight(36)
+            base = color or BG_SURFACE
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {base};
+                    color: {TEXT_PRIMARY};
+                    border: 1px solid {BORDER_SOLID};
+                    border-radius: 6px;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{ background: {BG_CARD_HOVER}; border-color: {ACCENT_GOLD}; }}
+                QPushButton:pressed {{ background: {BG_BASE}; }}
+            """)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            return btn
+
+        death_row = QHBoxLayout()
+        death_row.setSpacing(8)
+        add_btn = _action_btn("+ ADD DEATH")
+        sub_btn = _action_btn("− SUBTRACT DEATH")
+        add_btn.clicked.connect(self.sig_add_death)
+        sub_btn.clicked.connect(self.sig_subtract_death)
+        death_row.addWidget(add_btn)
+        death_row.addWidget(sub_btn)
+        outer.addLayout(death_row)
+
+        outer.addSpacing(8)
+
+        reset_row = QHBoxLayout()
+        reset_row.setSpacing(8)
+        reset_deaths_btn = _action_btn("RESET ALL DEATHS")
+        reset_bosses_btn = _action_btn("RESET BOSSES")
+        reset_deaths_btn.clicked.connect(self.sig_reset_deaths)
+        reset_bosses_btn.clicked.connect(self.sig_reset_bosses)
+        reset_row.addWidget(reset_deaths_btn)
+        reset_row.addWidget(reset_bosses_btn)
+        outer.addLayout(reset_row)
+
+        outer.addSpacing(12)
+
         # ── Hotkey reminder ───────────────────────────────────────
         hotkeys = QLabel("F9 = Death   ·   F10 = Kill   ·   F8 hold 3s = Reset all")
         hotkeys.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
@@ -548,7 +598,19 @@ class MortalityTab(QWidget):
 
 
 def _load_settings():
-    defaults = {"opacity": 100, "pin": False, "compact": False}
+    def _primary_monitor_idx():
+        try:
+            import mss as _mss
+            with _mss.mss() as sct:
+                for i, m in enumerate(sct.monitors[1:], start=1):
+                    if m["left"] == 0 and m["top"] == 0:
+                        return i
+        except Exception:
+            pass
+        return 1
+
+    defaults = {"opacity": 100, "pin": False, "compact": False, "monitor": _primary_monitor_idx(), "monitor_override": False}
+
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
@@ -567,6 +629,7 @@ class SettingsTab(QWidget):
     opacity_changed = pyqtSignal(int)
     pin_changed     = pyqtSignal(bool)
     compact_changed = pyqtSignal(bool)
+    monitor_changed = pyqtSignal(int)
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
@@ -613,7 +676,7 @@ class SettingsTab(QWidget):
         outer.addSpacing(12)
 
         # Hint text
-        hint = QLabel("Drag to adjust transparency when pinned over the game.")
+        hint = QLabel("Drag to adjust how transparent the window is.")
         hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
         hint.setWordWrap(True)
         outer.addWidget(hint)
@@ -645,6 +708,91 @@ class SettingsTab(QWidget):
         outer.addWidget(self.pin_btn)
         outer.addWidget(pin_hint)
 
+        # ── Detection ───────────────────────────────────────────
+        section("Detection")
+
+        auto_lbl = QLabel("Auto-detects which monitor your game is running on by reading window positions — no screen scanning.")
+        auto_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        auto_lbl.setWordWrap(True)
+        outer.addWidget(auto_lbl)
+
+        outer.addSpacing(10)
+
+        self.monitor_override_btn = QPushButton("MANUAL MONITOR OVERRIDE")
+        self.monitor_override_btn.setCheckable(True)
+        self.monitor_override_btn.setChecked(settings.get("monitor_override", False))
+        self.monitor_override_btn.setFixedHeight(36)
+        self.monitor_override_btn.clicked.connect(self._on_monitor_override_toggle)
+        outer.addWidget(self.monitor_override_btn)
+
+        override_hint = QLabel("Only enable this if auto-detect picks the wrong screen. Use if you have an unusual multi-monitor setup.")
+        override_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-top: 6px;")
+        override_hint.setWordWrap(True)
+        outer.addWidget(override_hint)
+
+        outer.addSpacing(10)
+
+        monitor_row = QHBoxLayout()
+        monitor_row.setSpacing(16)
+        monitor_lbl = QLabel("Game Monitor")
+        monitor_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
+        monitor_row.addWidget(monitor_lbl)
+
+        self.monitor_combo = QComboBox()
+        self.monitor_combo.setFixedHeight(32)
+        self.monitor_combo.setEnabled(settings.get("monitor_override", False))
+        self.monitor_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {BG_SURFACE};
+                color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER_SOLID};
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background: {BG_CARD};
+                color: {TEXT_PRIMARY};
+                selection-background-color: {BG_CARD_HOVER};
+            }}
+            QComboBox:disabled {{ color: {TEXT_DIM}; border-color: {BG_SURFACE}; }}
+        """)
+        try:
+            import mss as _mss
+            with _mss.mss() as sct:
+                primary_idx = next(
+                    (i for i, m in enumerate(sct.monitors[1:], start=1)
+                     if m["left"] == 0 and m["top"] == 0),
+                    1
+                )
+                for i, m in enumerate(sct.monitors[1:], start=1):
+                    left, top = m["left"], m["top"]
+                    w, h = m["width"], m["height"]
+                    if i == primary_idx:
+                        pos = "Primary"
+                    elif top < 0 and left == 0:
+                        pos = "Above primary"
+                    elif top > 0 and left == 0:
+                        pos = "Below primary"
+                    elif left < 0:
+                        pos = "Left of primary"
+                    elif left > 0:
+                        pos = "Right of primary"
+                    else:
+                        pos = f"Monitor {i}"
+                    self.monitor_combo.addItem(f"{pos}  ({w}×{h})", i)
+        except Exception:
+            self.monitor_combo.addItem("Primary monitor", 1)
+
+        saved = settings.get("monitor", 1)
+        idx = self.monitor_combo.findData(saved)
+        if idx >= 0:
+            self.monitor_combo.setCurrentIndex(idx)
+        self.monitor_combo.currentIndexChanged.connect(self._on_monitor)
+        monitor_row.addWidget(self.monitor_combo, 1)
+        outer.addLayout(monitor_row)
+
         outer.addStretch()
 
         # ── Footer branding ──────────────────────────────────────
@@ -652,21 +800,21 @@ class SettingsTab(QWidget):
         footer_row.setSpacing(10)
         footer_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        ch_lbl = QLabel()
-        ch_pix = QPixmap(LOGO_CH)
-        if not ch_pix.isNull():
-            ch_lbl.setPixmap(ch_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
-        footer_row.addWidget(ch_lbl)
-
-        ver = QLabel("QuestLog Mortality Tracker  v1.0  ·  by Casual Heroes")
-        ver.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
-        footer_row.addWidget(ver)
-
         ql_lbl = QLabel()
         ql_pix = QPixmap(LOGO_QL)
         if not ql_pix.isNull():
             ql_lbl.setPixmap(ql_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
         footer_row.addWidget(ql_lbl)
+
+        ver = QLabel("QuestLog Mortality Tracker  v1.0  ·  by Casual Heroes")
+        ver.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
+        footer_row.addWidget(ver)
+
+        ch_lbl = QLabel()
+        ch_pix = QPixmap(LOGO_CH)
+        if not ch_pix.isNull():
+            ch_lbl.setPixmap(ch_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
+        footer_row.addWidget(ch_lbl)
 
         outer.addLayout(footer_row)
 
@@ -691,6 +839,28 @@ class SettingsTab(QWidget):
         self._settings["compact"] = checked
         _save_settings(self._settings)
         self.compact_changed.emit(checked)
+
+    def _on_monitor_override_toggle(self, checked):
+        self.monitor_combo.setEnabled(checked)
+        self._settings["monitor_override"] = checked
+        _save_settings(self._settings)
+        if not checked:
+            self.monitor_changed.emit(None)  # None = back to auto-detect
+        else:
+            val = self.monitor_combo.currentData()
+            if val is not None:
+                self._settings["monitor"] = val
+                _save_settings(self._settings)
+                self.monitor_changed.emit(val)
+
+    def _on_monitor(self, _index):
+        if not self._settings.get("monitor_override", False):
+            return
+        val = self.monitor_combo.currentData()
+        if val is not None:
+            self._settings["monitor"] = val
+            _save_settings(self._settings)
+            self.monitor_changed.emit(val)
 
     def sync_pin(self, checked):
         self.pin_btn.blockSignals(True)
@@ -894,15 +1064,20 @@ class BossTrackerWindow(QMainWindow):
         self._build_boss_tabs(boss_tracker, on_kill)
 
         self.mortality_tab = MortalityTab(session=session, deaths=deaths, rage_label=rage_label)
+        self.mortality_tab.sig_add_death.connect(self._on_add_death)
+        self.mortality_tab.sig_subtract_death.connect(self._on_subtract_death)
+        self.mortality_tab.sig_reset_deaths.connect(self._on_reset_deaths)
+        self.mortality_tab.sig_reset_bosses.connect(self._on_reset_bosses)
+
         self.settings_tab  = SettingsTab(self._settings)
         self.settings_tab.opacity_changed.connect(self._on_opacity)
         self.settings_tab.pin_changed.connect(self._apply_pin)
         self.settings_tab.compact_changed.connect(self._on_compact)
+        self.settings_tab.monitor_changed.connect(self._on_monitor_changed)
 
         self.tabs.addTab(self.mortality_tab, "MORTALITY")
         self.tabs.addTab(self.settings_tab,  "SETTINGS")
 
-        self.setWindowOpacity(self._settings.get("opacity", 100) / 100.0)
         if self._settings.get("pin", False):
             self._apply_pin(True)
         if self._settings.get("compact", False):
@@ -941,6 +1116,17 @@ class BossTrackerWindow(QMainWindow):
         self._apply_pin(checked)
         self.settings_tab.sync_pin(checked)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, lambda: self._apply_opacity(self._settings.get("opacity", 100)))
+
+    def closeEvent(self, event):
+        self.switch_run.emit()
+        event.accept()
+
+    def _apply_opacity(self, pct):
+        self.setWindowOpacity(max(0.20, min(1.0, pct / 100.0)))
+
     def _apply_pin(self, checked):
         flags = self.windowFlags()
         if checked:
@@ -951,19 +1137,39 @@ class BossTrackerWindow(QMainWindow):
         self.pin_btn.setChecked(checked)
         self.pin_btn.blockSignals(False)
         self.show()
-        # setWindowFlags recreates the native window — re-apply opacity
-        self.setWindowOpacity(self._settings.get("opacity", 100) / 100.0)
+        QTimer.singleShot(50, lambda: self._apply_opacity(self._settings.get("opacity", 100)))
 
     def _on_opacity(self, val):
         self._settings["opacity"] = val
         _save_settings(self._settings)
-        self.setWindowOpacity(val / 100.0)
+        self._apply_opacity(val)
 
     def _on_compact(self, checked):
         height = 32 if checked else 44
         for tab in self._boss_tabs.values():
             for row in tab.rows:
                 row.setFixedHeight(height)
+
+    def _on_monitor_changed(self, index):
+        self._settings["monitor"] = index
+        _save_settings(self._settings)
+
+    def _on_add_death(self):
+        if self._deaths and self._session:
+            self._deaths.record_death()
+
+    def _on_subtract_death(self):
+        if self._deaths and self._session:
+            self._deaths.subtract_death()
+
+    def _on_reset_deaths(self):
+        if self._deaths and self._session:
+            self._session.reset_total_deaths()
+            self._deaths.reset()
+
+    def _on_reset_bosses(self):
+        if self.boss_tracker:
+            self.boss_tracker.reset_all()
 
     def refresh(self, boss_list, session=None, deaths=None):
         by_group = {}

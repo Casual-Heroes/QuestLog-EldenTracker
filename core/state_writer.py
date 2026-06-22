@@ -1,10 +1,8 @@
 import json
 import os
-import sys
+from core.paths import overlay as _overlay_path
 
-# When frozen by PyInstaller, resolve relative to the exe — not _internal/
-_BASE = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.join(os.path.dirname(__file__), "..")
-_OVERLAY_FILE = os.path.join(_BASE, "overlay", "stats.json")
+_OVERLAY_FILE = _overlay_path("stats.json")
 
 
 def write_state(session, death_tracker, boss_tracker, run_dir=None, rage_label="Rage Index"):

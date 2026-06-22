@@ -13,7 +13,6 @@ Built by [Casual Heroes](https://questlog.casual-heroes.com) for streamers and p
 - **Rage Index** — a tiered fury system that builds as you die and decays as you kill. Go hollow enough times and it shows
 - **OBS overlay** — self-contained HTML browser source, no server needed
 - **Multiple runs** — create named runs per playthrough, switch between them, everything persists
-- **Auto-resume** — reopening the app picks up where you left off
 - **OCR death detection** — automatically detects the YOU DIED screen via screen capture (hotkeys available as fallback)
 - **Always on top / opacity** — pin the tracker over your game, dial in the transparency
 
@@ -43,9 +42,9 @@ More games coming in future releases.
 ## OBS Overlay Setup
 
 1. In OBS, add a **Browser Source**
-2. Check **Local file** and point it to `overlay/index.html` in the tracker folder
+2. Set the URL to `http://localhost:8765/index.html` (the tracker runs a local server automatically)
 3. Set width to `300`, height to `420`
-4. The overlay polls `stats.json` every second automatically — no config needed
+4. The overlay updates every second while the tracker is running — no additional config needed
 
 The overlay supports three boss display modes (cycle with the button): recent kills, full list, or count only.
 
