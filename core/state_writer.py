@@ -1,8 +1,10 @@
 import json
 import os
+import sys
 
-# Also write to the legacy overlay path so OBS browser source keeps working
-_OVERLAY_FILE = os.path.join(os.path.dirname(__file__), "..", "overlay", "stats.json")
+# When frozen by PyInstaller, resolve relative to the exe — not _internal/
+_BASE = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.join(os.path.dirname(__file__), "..")
+_OVERLAY_FILE = os.path.join(_BASE, "overlay", "stats.json")
 
 
 def write_state(session, death_tracker, boss_tracker, run_dir=None, rage_label="Rage Index"):
