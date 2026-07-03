@@ -1,8 +1,5 @@
 psutil
 keyboard
-mss
-numpy
-Pillow
-easyocr
+requests
 PyQt6
 pyinstaller

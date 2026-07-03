@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QScrollArea, QLabel, QCheckBox, QLineEdit,
     QPushButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QSlider, QSpacerItem, QComboBox
+    QSlider, QSpacerItem
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QUrl
 from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QDesktopServices, QIcon
@@ -261,10 +261,11 @@ class RegionHeader(QWidget):
 
 
 class BossTab(QWidget):
-    def __init__(self, bosses, boss_tracker, on_kill=None, accent=None, parent=None):
+    def __init__(self, bosses, boss_tracker, on_kill=None, accent=None, api=None, parent=None):
         super().__init__(parent)
         self.boss_tracker = boss_tracker
         self.on_kill = on_kill
+        self._api    = api
         self.rows = []
         self.region_headers = {}
         self._accent = accent or ACCENT_GOLD
@@ -349,8 +350,12 @@ class BossTab(QWidget):
             if self.on_kill:
                 tier = self.boss_tracker.get_tier(key)
                 self.on_kill(tier=tier)
+            if self._api:
+                self._api.mark_boss(key)
         else:
             self.boss_tracker.mark_undefeated(key)
+            if self._api:
+                self._api.unmark_boss(key)
         self._update_progress()
 
     def _filter(self, query):
@@ -522,7 +527,7 @@ class MortalityTab(QWidget):
         outer.addSpacing(12)
 
         # ── Hotkey reminder ───────────────────────────────────────
-        hotkeys = QLabel("F9 = Death   ·   F10 = Kill   ·   F8 hold 3s = Reset all")
+        hotkeys = QLabel("Hotkeys configurable in Settings tab")
         hotkeys.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
         hotkeys.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(hotkeys)
@@ -598,19 +603,17 @@ class MortalityTab(QWidget):
 
 
 def _load_settings():
-    def _primary_monitor_idx():
-        try:
-            import mss as _mss
-            with _mss.mss() as sct:
-                for i, m in enumerate(sct.monitors[1:], start=1):
-                    if m["left"] == 0 and m["top"] == 0:
-                        return i
-        except Exception:
-            pass
-        return 1
-
-    defaults = {"opacity": 100, "pin": False, "compact": False, "monitor": _primary_monitor_idx(), "monitor_override": False}
-
+    defaults = {
+        "opacity":         100,
+        "pin":             False,
+        "compact":         False,
+        "hotkey_death":    "f9",
+        "hotkey_subtract": "f10",
+        "hotkey_reset":    "f8",
+        "api_key":         "",
+        "session_token":   "",
+        "username":        "",
+    }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
@@ -626,18 +629,32 @@ def _save_settings(settings):
 
 
 class SettingsTab(QWidget):
-    opacity_changed = pyqtSignal(int)
-    pin_changed     = pyqtSignal(bool)
-    compact_changed = pyqtSignal(bool)
-    monitor_changed = pyqtSignal(int)
+    opacity_changed  = pyqtSignal(int)
+    pin_changed      = pyqtSignal(bool)
+    compact_changed  = pyqtSignal(bool)
+    hotkeys_changed  = pyqtSignal(dict)
+    login_requested  = pyqtSignal()
+    logout_requested = pyqtSignal()
+    # emitted from worker thread via App — connected in main.py
+    login_succeeded  = pyqtSignal(str, str, list)   # api_key, username, runs
+    login_failed     = pyqtSignal(str)               # error message
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self._settings = settings
 
-        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
         outer.setContentsMargins(24, 24, 24, 24)
         outer.setSpacing(0)
+        scroll.setWidget(inner)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(scroll)
 
         def section(title):
             lbl = QLabel(title.upper())
@@ -649,10 +666,9 @@ class SettingsTab(QWidget):
             line.setStyleSheet(f"color: {BORDER_SOLID}; margin-bottom: 16px;")
             outer.addWidget(line)
 
-        # ── Appearance ──────────────────────────────────────────
+        # ── Appearance ────────────────────────────────────────────────────────
         section("Appearance")
 
-        # Opacity
         row = QHBoxLayout()
         row.setSpacing(16)
         opacity_lbl = QLabel("Window Opacity")
@@ -661,40 +677,25 @@ class SettingsTab(QWidget):
         self.opacity_val.setFixedWidth(40)
         self.opacity_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.opacity_val.setStyleSheet(f"color: {ACCENT_GOLD}; font-weight: 700;")
-
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(20, 100)
         self.opacity_slider.setValue(settings["opacity"])
         self.opacity_slider.setFixedHeight(24)
         self.opacity_slider.valueChanged.connect(self._on_opacity)
-
         row.addWidget(opacity_lbl)
         row.addWidget(self.opacity_slider, 1)
         row.addWidget(self.opacity_val)
         outer.addLayout(row)
-
-        outer.addSpacing(12)
-
-        # Hint text
-        hint = QLabel("Drag to adjust how transparent the window is.")
-        hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        hint.setWordWrap(True)
-        outer.addWidget(hint)
-
         outer.addSpacing(8)
 
-        # Compact mode toggle
         self.compact_btn = QPushButton("COMPACT MODE")
         self.compact_btn.setCheckable(True)
         self.compact_btn.setChecked(settings.get("compact", False))
         self.compact_btn.setFixedHeight(36)
         self.compact_btn.clicked.connect(self._on_compact)
-        compact_hint = QLabel("Shrinks boss rows to show more on screen.")
-        compact_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-top: 6px;")
         outer.addWidget(self.compact_btn)
-        outer.addWidget(compact_hint)
 
-        # ── Window ──────────────────────────────────────────────
+        # ── Window ────────────────────────────────────────────────────────────
         section("Window")
 
         self.pin_btn = QPushButton("ALWAYS ON TOP")
@@ -702,100 +703,89 @@ class SettingsTab(QWidget):
         self.pin_btn.setChecked(settings.get("pin", False))
         self.pin_btn.setFixedHeight(36)
         self.pin_btn.clicked.connect(self._on_pin)
-        pin_hint = QLabel("Keep the tracker above all other windows. Same as the PIN button in the header.")
+        pin_hint = QLabel("Keep the tracker above all other windows.")
         pin_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-top: 6px;")
-        pin_hint.setWordWrap(True)
         outer.addWidget(self.pin_btn)
         outer.addWidget(pin_hint)
 
-        # ── Detection ───────────────────────────────────────────
-        section("Detection")
+        # ── Hotkeys ───────────────────────────────────────────────────────────
+        section("Hotkeys")
 
-        auto_lbl = QLabel("Auto-detects which monitor your game is running on by reading window positions — no screen scanning.")
-        auto_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        auto_lbl.setWordWrap(True)
-        outer.addWidget(auto_lbl)
-
+        hk_info = QLabel("Click a box and press any key to remap. Takes effect immediately.")
+        hk_info.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        hk_info.setWordWrap(True)
+        outer.addWidget(hk_info)
         outer.addSpacing(10)
 
-        self.monitor_override_btn = QPushButton("MANUAL MONITOR OVERRIDE")
-        self.monitor_override_btn.setCheckable(True)
-        self.monitor_override_btn.setChecked(settings.get("monitor_override", False))
-        self.monitor_override_btn.setFixedHeight(36)
-        self.monitor_override_btn.clicked.connect(self._on_monitor_override_toggle)
-        outer.addWidget(self.monitor_override_btn)
+        self._hk_fields = {}
+        for key, label, default in [
+            ("hotkey_death",    "Add Death",              "f9"),
+            ("hotkey_subtract", "Subtract Death",         "f10"),
+            ("hotkey_reset",    "Reset All (hold 3s)",    "f8"),
+        ]:
+            self._hk_fields[key] = self._make_hotkey_row(outer, label, settings.get(key, default))
 
-        override_hint = QLabel("Only enable this if auto-detect picks the wrong screen. Use if you have an unusual multi-monitor setup.")
-        override_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-top: 6px;")
-        override_hint.setWordWrap(True)
-        outer.addWidget(override_hint)
+        # ── QuestLog Account ──────────────────────────────────────────────────
+        section("QuestLog Account")
 
-        outer.addSpacing(10)
+        account_info = QLabel(
+            "Optional — connect your QuestLog account to sync deaths and "
+            "boss progress to the web tracker and leaderboards."
+        )
+        account_info.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        account_info.setWordWrap(True)
+        outer.addWidget(account_info)
+        outer.addSpacing(12)
 
-        monitor_row = QHBoxLayout()
-        monitor_row.setSpacing(16)
-        monitor_lbl = QLabel("Game Monitor")
-        monitor_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
-        monitor_row.addWidget(monitor_lbl)
+        self._username_lbl = QLabel("")
+        self._username_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; font-weight: 700; font-size: 12px;")
+        self._username_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._username_lbl.setVisible(False)
+        outer.addWidget(self._username_lbl)
 
-        self.monitor_combo = QComboBox()
-        self.monitor_combo.setFixedHeight(32)
-        self.monitor_combo.setEnabled(settings.get("monitor_override", False))
-        self.monitor_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {BG_SURFACE};
-                color: {TEXT_PRIMARY};
-                border: 1px solid {BORDER_SOLID};
+        self._login_status = QLabel("")
+        self._login_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self._login_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._login_status.setWordWrap(True)
+        outer.addWidget(self._login_status)
+        outer.addSpacing(8)
+
+        self._login_btn = QPushButton("LOGIN WITH QUESTLOG")
+        self._login_btn.setFixedHeight(40)
+        self._login_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ACCENT_GOLD};
+                color: {BG_BASE};
+                border: none;
                 border-radius: 6px;
-                padding: 4px 10px;
                 font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 1px;
             }}
-            QComboBox::drop-down {{ border: none; }}
-            QComboBox QAbstractItemView {{
-                background: {BG_CARD};
-                color: {TEXT_PRIMARY};
-                selection-background-color: {BG_CARD_HOVER};
-            }}
-            QComboBox:disabled {{ color: {TEXT_DIM}; border-color: {BG_SURFACE}; }}
+            QPushButton:hover {{ background: {ACCENT_GOLD2}; }}
+            QPushButton:pressed {{ background: {ACCENT_GOLD}; }}
+            QPushButton:disabled {{ background: {BG_SURFACE}; color: {TEXT_DIM}; }}
         """)
-        try:
-            import mss as _mss
-            with _mss.mss() as sct:
-                primary_idx = next(
-                    (i for i, m in enumerate(sct.monitors[1:], start=1)
-                     if m["left"] == 0 and m["top"] == 0),
-                    1
-                )
-                for i, m in enumerate(sct.monitors[1:], start=1):
-                    left, top = m["left"], m["top"]
-                    w, h = m["width"], m["height"]
-                    if i == primary_idx:
-                        pos = "Primary"
-                    elif top < 0 and left == 0:
-                        pos = "Above primary"
-                    elif top > 0 and left == 0:
-                        pos = "Below primary"
-                    elif left < 0:
-                        pos = "Left of primary"
-                    elif left > 0:
-                        pos = "Right of primary"
-                    else:
-                        pos = f"Monitor {i}"
-                    self.monitor_combo.addItem(f"{pos}  ({w}×{h})", i)
-        except Exception:
-            self.monitor_combo.addItem("Primary monitor", 1)
+        self._login_btn.clicked.connect(self._on_login_clicked)
+        outer.addWidget(self._login_btn)
 
-        saved = settings.get("monitor", 1)
-        idx = self.monitor_combo.findData(saved)
-        if idx >= 0:
-            self.monitor_combo.setCurrentIndex(idx)
-        self.monitor_combo.currentIndexChanged.connect(self._on_monitor)
-        monitor_row.addWidget(self.monitor_combo, 1)
-        outer.addLayout(monitor_row)
+        self._logout_btn = QPushButton("LOGOUT")
+        self._logout_btn.setFixedHeight(36)
+        self._logout_btn.setVisible(False)
+        self._logout_btn.clicked.connect(self._on_logout_clicked)
+        outer.addWidget(self._logout_btn)
+
+        outer.addSpacing(8)
+
+        web_btn = QPushButton("Open Web Tracker →")
+        web_btn.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; border: none; background: transparent;")
+        web_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        web_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SITE_URL)))
+        outer.addWidget(web_btn)
 
         outer.addStretch()
 
-        # ── Footer branding ──────────────────────────────────────
+        # ── Footer ────────────────────────────────────────────────────────────
         footer_row = QHBoxLayout()
         footer_row.setSpacing(10)
         footer_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -824,6 +814,165 @@ class SettingsTab(QWidget):
         site_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SITE_URL)))
         outer.addWidget(site_btn)
 
+        # Connect login signals (emitted from App worker thread)
+        self.login_succeeded.connect(self._on_login_success)
+        self.login_failed.connect(self._on_login_error)
+
+        # Restore logged-in state if we have saved credentials
+        if settings.get("api_key") and settings.get("username"):
+            self._set_logged_in(settings["username"])
+
+    # ── Hotkey row ────────────────────────────────────────────────────────────
+
+    def _make_hotkey_row(self, layout, label, current_key):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+
+        lbl = QLabel(label)
+        lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; min-width: 140px;")
+        lbl.setFixedWidth(140)
+
+        field = QLineEdit(current_key.upper())
+        field.setFixedHeight(34)
+        field.setReadOnly(True)
+        field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        field.setCursor(Qt.CursorShape.PointingHandCursor)
+        field.setStyleSheet(f"""
+            QLineEdit {{
+                background: {BG_SURFACE};
+                border: 1px solid {BORDER_SOLID};
+                border-radius: 6px;
+                color: {ACCENT_GOLD};
+                font-weight: 700;
+                font-size: 12px;
+                padding: 0 8px;
+            }}
+            QLineEdit:focus {{
+                border-color: {ACCENT_GOLD};
+                background: {BG_CARD};
+                color: {TEXT_PRIMARY};
+            }}
+        """)
+
+        def on_focus_in(event):
+            field.setText("Press a key...")
+            field.setStyleSheet(field.styleSheet())
+            QLineEdit.focusInEvent(field, event)
+
+        def on_key_press(event):
+            from PyQt6.QtCore import Qt as _Qt
+            key = event.key()
+            # Ignore modifier-only presses
+            if key in (
+                _Qt.Key.Key_Control, _Qt.Key.Key_Shift,
+                _Qt.Key.Key_Alt, _Qt.Key.Key_Meta,
+            ):
+                return
+            # Map Qt key to keyboard-lib name
+            name = self._qt_key_to_name(key, event.text())
+            if name:
+                field.setText(name.upper())
+                field.clearFocus()
+                self._save_hotkeys()
+
+        field.focusInEvent  = on_focus_in
+        field.keyPressEvent = on_key_press
+
+        row.addWidget(lbl)
+        row.addWidget(field, 1)
+        layout.addLayout(row)
+        layout.addSpacing(6)
+        return field
+
+    @staticmethod
+    def _qt_key_to_name(qt_key, text):
+        from PyQt6.QtCore import Qt as _Qt
+        _MAP = {
+            _Qt.Key.Key_F1:  "f1",  _Qt.Key.Key_F2:  "f2",  _Qt.Key.Key_F3:  "f3",
+            _Qt.Key.Key_F4:  "f4",  _Qt.Key.Key_F5:  "f5",  _Qt.Key.Key_F6:  "f6",
+            _Qt.Key.Key_F7:  "f7",  _Qt.Key.Key_F8:  "f8",  _Qt.Key.Key_F9:  "f9",
+            _Qt.Key.Key_F10: "f10", _Qt.Key.Key_F11: "f11", _Qt.Key.Key_F12: "f12",
+            _Qt.Key.Key_Insert:    "insert",   _Qt.Key.Key_Delete:    "delete",
+            _Qt.Key.Key_Home:      "home",     _Qt.Key.Key_End:       "end",
+            _Qt.Key.Key_PageUp:    "page up",  _Qt.Key.Key_PageDown:  "page down",
+            _Qt.Key.Key_Up:        "up",       _Qt.Key.Key_Down:      "down",
+            _Qt.Key.Key_Left:      "left",     _Qt.Key.Key_Right:     "right",
+            _Qt.Key.Key_Tab:       "tab",      _Qt.Key.Key_Escape:    "esc",
+            _Qt.Key.Key_Return:    "enter",    _Qt.Key.Key_Space:     "space",
+        }
+        if qt_key in _MAP:
+            return _MAP[qt_key]
+        if text and text.isprintable() and len(text) == 1:
+            return text.lower()
+        return None
+
+    def _save_hotkeys(self):
+        mapping = {
+            "hotkey_death":    "f9",
+            "hotkey_subtract": "f10",
+            "hotkey_reset":    "f8",
+        }
+        changed = False
+        for key, default in mapping.items():
+            field = self._hk_fields[key]
+            val = field.text().lower()
+            if val and val != "press a key...":
+                if self._settings.get(key) != val:
+                    self._settings[key] = val
+                    changed = True
+        if changed:
+            _save_settings(self._settings)
+            self.hotkeys_changed.emit({
+                "death":    self._settings.get("hotkey_death",    "f9"),
+                "subtract": self._settings.get("hotkey_subtract", "f10"),
+                "reset":    self._settings.get("hotkey_reset",    "f8"),
+            })
+
+    # ── Login UI ──────────────────────────────────────────────────────────────
+
+    def _on_login_clicked(self):
+        self._login_btn.setEnabled(False)
+        self._login_status.setText("Opening browser — waiting for login...")
+        self._login_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self.login_requested.emit()
+
+    def _on_login_success(self, api_key, username, runs):
+        self._settings["api_key"]  = api_key
+        self._settings["username"] = username
+        _save_settings(self._settings)
+        self._set_logged_in(username)
+
+    def _on_login_error(self, msg):
+        self._login_btn.setEnabled(True)
+        self._login_status.setText(f"Login failed: {msg}")
+        self._login_status.setStyleSheet(f"color: {RED_LIVE}; font-size: 11px;")
+
+    def _on_logout_clicked(self):
+        self._settings["api_key"]       = ""
+        self._settings["session_token"] = ""
+        self._settings["username"]      = ""
+        _save_settings(self._settings)
+        self._set_logged_out()
+        self.logout_requested.emit()
+
+    def _set_logged_in(self, username):
+        self._username_lbl.setText(f"Logged in as  {username}")
+        self._username_lbl.setVisible(True)
+        self._login_status.setText("Deaths and boss progress sync to QuestLog.")
+        self._login_status.setStyleSheet(f"color: {GREEN_LIVE}; font-size: 11px;")
+        self._login_btn.setVisible(False)
+        self._logout_btn.setVisible(True)
+
+    def _set_logged_out(self):
+        self._username_lbl.setVisible(False)
+        self._login_status.setText("Not connected — running offline.")
+        self._login_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self._login_btn.setVisible(True)
+        self._login_btn.setEnabled(True)
+        self._logout_btn.setVisible(False)
+
+    # ── Other settings ────────────────────────────────────────────────────────
+
     def _on_opacity(self, val):
         self._settings["opacity"] = val
         self.opacity_val.setText(f"{val}%")
@@ -839,28 +988,6 @@ class SettingsTab(QWidget):
         self._settings["compact"] = checked
         _save_settings(self._settings)
         self.compact_changed.emit(checked)
-
-    def _on_monitor_override_toggle(self, checked):
-        self.monitor_combo.setEnabled(checked)
-        self._settings["monitor_override"] = checked
-        _save_settings(self._settings)
-        if not checked:
-            self.monitor_changed.emit(None)  # None = back to auto-detect
-        else:
-            val = self.monitor_combo.currentData()
-            if val is not None:
-                self._settings["monitor"] = val
-                _save_settings(self._settings)
-                self.monitor_changed.emit(val)
-
-    def _on_monitor(self, _index):
-        if not self._settings.get("monitor_override", False):
-            return
-        val = self.monitor_combo.currentData()
-        if val is not None:
-            self._settings["monitor"] = val
-            _save_settings(self._settings)
-            self.monitor_changed.emit(val)
 
     def sync_pin(self, checked):
         self.pin_btn.blockSignals(True)
@@ -948,7 +1075,7 @@ class CompactStatsBar(QWidget):
 class BossTrackerWindow(QMainWindow):
     switch_run = pyqtSignal()
 
-    def __init__(self, boss_tracker, run_meta, session=None, deaths=None, on_kill=None, rage_label="Rage Index"):
+    def __init__(self, boss_tracker, run_meta, session=None, deaths=None, on_kill=None, rage_label="Rage Index", api=None):
         super().__init__()
         self._rage_label = rage_label
         self.boss_tracker = boss_tracker
@@ -956,6 +1083,7 @@ class BossTrackerWindow(QMainWindow):
         self._session  = session
         self._deaths   = deaths
         self.on_kill   = on_kill
+        self._api      = api
         self._settings = _load_settings()
 
         game  = run_meta.get("game_id", "").replace("_", " ").title()
@@ -1061,7 +1189,7 @@ class BossTrackerWindow(QMainWindow):
         root.addWidget(self.tabs)
 
         self._boss_tabs = {}   # group_label → BossTab
-        self._build_boss_tabs(boss_tracker, on_kill)
+        self._build_boss_tabs(boss_tracker, on_kill, self._api)
 
         self.mortality_tab = MortalityTab(session=session, deaths=deaths, rage_label=rage_label)
         self.mortality_tab.sig_add_death.connect(self._on_add_death)
@@ -1073,7 +1201,6 @@ class BossTrackerWindow(QMainWindow):
         self.settings_tab.opacity_changed.connect(self._on_opacity)
         self.settings_tab.pin_changed.connect(self._apply_pin)
         self.settings_tab.compact_changed.connect(self._on_compact)
-        self.settings_tab.monitor_changed.connect(self._on_monitor_changed)
 
         self.tabs.addTab(self.mortality_tab, "MORTALITY")
         self.tabs.addTab(self.settings_tab,  "SETTINGS")
@@ -1093,7 +1220,7 @@ class BossTrackerWindow(QMainWindow):
         "Shadow of the Erdtree":        "SOTE",
     }
 
-    def _build_boss_tabs(self, boss_tracker, on_kill):
+    def _build_boss_tabs(self, boss_tracker, on_kill, api=None):
         all_bosses = boss_tracker.export()
         seen_groups = []
         by_group = {}
@@ -1105,7 +1232,7 @@ class BossTrackerWindow(QMainWindow):
             by_group[g].append(b)
 
         for group in seen_groups:
-            tab = BossTab(by_group[group], boss_tracker, on_kill=on_kill)
+            tab = BossTab(by_group[group], boss_tracker, on_kill=on_kill, api=api)
             label = self._TAB_LABELS.get(group, group.upper())
             self._boss_tabs[group] = tab
             self.tabs.insertTab(self.tabs.count() - 0, tab, label)
@@ -1150,26 +1277,30 @@ class BossTrackerWindow(QMainWindow):
             for row in tab.rows:
                 row.setFixedHeight(height)
 
-    def _on_monitor_changed(self, index):
-        self._settings["monitor"] = index
-        _save_settings(self._settings)
-
     def _on_add_death(self):
         if self._deaths and self._session:
             self._deaths.record_death()
+            if self._api:
+                self._api.post_death()
 
     def _on_subtract_death(self):
         if self._deaths and self._session:
             self._deaths.subtract_death()
+            if self._api:
+                self._api.post_subtract()
 
     def _on_reset_deaths(self):
         if self._deaths and self._session:
             self._session.reset_total_deaths()
             self._deaths.reset()
+            if self._api:
+                self._api.post_reset()
 
     def _on_reset_bosses(self):
         if self.boss_tracker:
             self.boss_tracker.reset_all()
+            if self._api:
+                self._api.post_boss_reset()
 
     def refresh(self, boss_list, session=None, deaths=None):
         by_group = {}
