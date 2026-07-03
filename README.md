@@ -1,4 +1,4 @@
-# QuestLog Mortality Tracker
+# QuestLog EldenTracker
 
 **SoulsLike Boss, Death, and Build Tracker** — track your suffering, plan your build, compete on community leaderboards, and keep every run organised.
 
