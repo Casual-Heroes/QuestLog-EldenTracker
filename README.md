@@ -25,7 +25,7 @@ Built by [Casual Heroes](https://questlog.casual-heroes.com) for streamers and p
 | Game | Modes |
 |------|-------|
 | Elden Ring | Vanilla (base game + Shadow of the Erdtree DLC) |
-| Elden Ring | Elden Ring Reforged (mod) |
+| Elden Ring | Elden Ring Reforged + DLC (mod) |
 
 More games coming in future releases.
 
