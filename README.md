@@ -145,4 +145,4 @@ GNU General Public License v3.0 — free to use and modify, but any derivative w
 
 ---
 
-*QuestLog Mortality Tracker is a [Casual Heroes](https://questlog.casual-heroes.com) project. Not affiliated with FromSoftware or any game publisher.*
+*QuestLog EldenTracker is a [Casual Heroes](https://questlog.casual-heroes.com) project. Not affiliated with FromSoftware or any game publisher.*
