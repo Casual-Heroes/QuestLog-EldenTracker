@@ -121,20 +121,55 @@ class QuestLogClient:
         username = data.get("username", "")
 
         try:
-            runs_r = requests.get(
-                f"{BASE_URL}/api/soulslike/runs/active/",
+            profile_r = requests.get(
+                f"{BASE_URL}/api/soulslike/desktop/profile/",
                 headers={"X-Listener-Key": api_key},
                 timeout=10,
             )
-            runs_data = runs_r.json()
-            runs = runs_data.get("runs", [])
+            profile = profile_r.json() if profile_r.ok else {}
         except Exception as e:
-            on_error(f"Could not fetch runs: {e}")
+            on_error(f"Could not fetch profile: {e}")
             return
 
-        on_success(api_key, username, runs)
+        on_success(api_key, username, profile)
 
     # ── Run discovery ─────────────────────────────────────────────────────────
+
+    def get_profile(self):
+        """
+        Fetch full desktop profile: active_runs, run_history, builds.
+        Blocking — call from thread.
+        Returns dict with keys: active_runs, run_history, builds (each a list).
+        """
+        try:
+            r = self._http.get(
+                f"{BASE_URL}/api/soulslike/desktop/profile/",
+                headers=self._key_header,
+                timeout=10,
+            )
+            return r.json() if r.ok else {}
+        except Exception as e:
+            log.warning("get_profile failed: %s", e)
+            return {}
+
+    def create_session(self, game, game_mode, build_name=""):
+        """
+        Start a new run session on the server.
+        Returns {'ok': True, 'token': '...', 'manage_url': '...'} or {}.
+        Blocking — call from thread.
+        """
+        try:
+            r = self._http.post(
+                f"{BASE_URL}/api/soulslike/desktop/session/create/",
+                json={"game": game, "game_mode": game_mode,
+                      "build_name": build_name, "timing_mode": "listener"},
+                headers=self._key_header,
+                timeout=10,
+            )
+            return r.json() if r.ok else {}
+        except Exception as e:
+            log.warning("create_session failed: %s", e)
+            return {}
 
     def get_active_runs(self):
         """Returns full runs payload or empty dict. Blocking — call from thread."""

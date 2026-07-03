@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import shutil, os
 
 block_cipher = None
 
@@ -6,16 +7,12 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('assets',          'assets'),
-        ('games',           'games'),
-    ],
+    datas=[],
     hiddenimports=[
         'games.elden_ring',
         'games.elden_ring.bosses_vanilla',
         'games.elden_ring.bosses_dlc',
         'games.elden_ring.bosses_reforged',
-        'easyocr',
         'PyQt6',
         'PyQt6.QtCore',
         'PyQt6.QtGui',
@@ -24,7 +21,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'easyocr', 'torch', 'torchvision', 'torchaudio',
+        'numpy', 'cv2', 'PIL', 'Pillow', 'mss',
+        'matplotlib', 'scipy', 'sklearn',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -48,13 +49,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/QL1.ico',
+    icon='assets/CH.ico',
 )
-
-import shutil, os
-# Copy overlay next to exe after build (not into _internal)
-overlay_src = os.path.join(SPECPATH, 'overlay')
-overlay_dst = os.path.join(DISTPATH, 'QuestLog', 'overlay')
 
 coll = COLLECT(
     exe,
@@ -67,6 +63,12 @@ coll = COLLECT(
     name='QuestLog',
 )
 
-if os.path.exists(overlay_dst):
-    shutil.rmtree(overlay_dst)
-shutil.copytree(overlay_src, overlay_dst)
+# Copy data folders next to the exe (not into _internal)
+# core/paths.py looks for these relative to sys.executable
+_dist = os.path.join(DISTPATH, 'QuestLog')
+for _folder in ('overlay', 'games', 'assets'):
+    _src = os.path.join(SPECPATH, _folder)
+    _dst = os.path.join(_dist, _folder)
+    if os.path.exists(_dst):
+        shutil.rmtree(_dst)
+    shutil.copytree(_src, _dst)

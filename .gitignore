@@ -20,6 +20,12 @@ overlay/stats.json
 # Keep settings template but not user's actual settings
 data/settings.json
 
+# User's personal saved builds (not shared with repo)
+data/builds/
+
+# Builder cache — regenerated on first run from API
+data/builder_cache/
+
 # Virtual environments
 .venv/
 venv/
@@ -48,4 +54,3 @@ build/
 *_backup*/
 *_backup_*/
 build_log.txt
-questlog.spec

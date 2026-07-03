@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QScrollArea, QLabel, QCheckBox, QLineEdit,
     QPushButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QSlider, QSpacerItem
+    QSlider, QSpacerItem, QDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QUrl
 from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QDesktopServices, QIcon
@@ -14,6 +14,7 @@ from core.paths import assets as _assets_path, data as _data_path
 LOGO_QL     = _assets_path("QL1.png")
 LOGO_QL_ICO = _assets_path("QL1.ico")
 LOGO_CH     = _assets_path("CH.png")
+LOGO_CH_ICO = _assets_path("CH.ico")
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
 
@@ -150,40 +151,27 @@ QSlider::sub-page:horizontal {{
 
 
 class BossRow(QWidget):
+    # state: 'idle' | 'focusing' | 'defeated'
+    tapped = pyqtSignal(str, str, str)   # key, name, new_state
+
+    # Keep toggled as alias so refresh() still works
     toggled = pyqtSignal(str, bool)
 
     def __init__(self, key, name, location, defeated, parent=None):
         super().__init__(parent)
-        self.key = key
-        self._defeated = defeated
+        self.key      = key
+        self._name    = name
+        self._state   = "defeated" if defeated else "idle"
+        self._defeated = defeated   # kept for compat with refresh()
         self.setFixedHeight(44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._apply_bg(defeated)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
 
-        self.check = QCheckBox()
-        self.check.setChecked(defeated)
-        self.check.setFixedSize(20, 20)
-        self.check.setStyleSheet(f"""
-            QCheckBox {{ spacing: 0; }}
-            QCheckBox::indicator {{
-                width: 18px; height: 18px;
-                border-radius: 4px;
-                border: 1.5px solid {BORDER_SOLID};
-                background: {BG_BASE};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {GREEN_DIM};
-                border-color: {GREEN_LIVE};
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {ACCENT_GOLD};
-            }}
-        """)
-        self.check.stateChanged.connect(self._on_toggle)
+        self._dot = QLabel()
+        self._dot.setFixedSize(14, 14)
 
         self.name_lbl = QLabel(name)
         self.name_lbl.setFont(QFont("Palatino Linotype", 11))
@@ -194,39 +182,55 @@ class BossRow(QWidget):
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self.badge.setFixedHeight(24)
-        self.badge.setStyleSheet("border-radius: 4px;")
 
-        layout.addWidget(self.check)
+        layout.addWidget(self._dot)
         layout.addWidget(self.name_lbl)
         layout.addWidget(self.badge)
 
-        self._apply_style(defeated)
+        self._apply_state(self._state)
 
-    def _on_toggle(self, state):
-        defeated = bool(state)
-        self._defeated = defeated
-        self._apply_style(defeated)
-        self._apply_bg(defeated)
-        self.toggled.emit(self.key, defeated)
-
-    def _apply_style(self, defeated):
-        if defeated:
+    def _apply_state(self, state):
+        if state == "defeated":
+            self.setStyleSheet(f"QWidget {{ background: rgba(34,197,94,0.04); border-left: 3px solid {GREEN_DIM}; }}")
+            self._dot.setStyleSheet(f"background: {GREEN_LIVE}; border-radius: 7px;")
             self.name_lbl.setStyleSheet(f"color: {GREEN_LIVE};")
             self.badge.setText("DEFEATED")
             self.badge.setStyleSheet(f"background: {GREEN_DIM}44; color: {GREEN_LIVE}; border: 1px solid {GREEN_DIM}; border-radius: 4px; padding: 0 6px; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
-        else:
+        elif state == "focusing":
+            self.setStyleSheet(f"QWidget {{ background: rgba(192,57,15,0.08); border-left: 3px solid {ACCENT_RED2}; }}")
+            self._dot.setStyleSheet(f"background: {ACCENT_RED2}; border-radius: 7px;")
+            self.name_lbl.setStyleSheet(f"color: {ACCENT_RED2};")
+            self.badge.setText("FIGHTING")
+            self.badge.setStyleSheet(f"background: rgba(192,57,15,0.15); color: {ACCENT_RED2}; border: 1px solid {ACCENT_RED2}; border-radius: 4px; padding: 0 6px; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
+        else:  # idle
+            self.setStyleSheet(f"QWidget {{ background: transparent; border-left: 3px solid {BORDER_SOLID}; }}")
+            self._dot.setStyleSheet(f"background: {TEXT_DIM}; border-radius: 7px;")
             self.name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
             self.badge.setText("ALIVE")
             self.badge.setStyleSheet(f"background: {RED_DIM}44; color: {RED_LIVE}; border: 1px solid {RED_DIM}; border-radius: 4px; padding: 0 6px; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
 
-    def _apply_bg(self, defeated):
-        if defeated:
-            self.setStyleSheet(f"QWidget {{ background: rgba(34,197,94,0.04); border-left: 3px solid {GREEN_DIM}; }}")
-        else:
-            self.setStyleSheet(f"QWidget {{ background: transparent; border-left: 3px solid {RED_DIM}44; }}")
-
     def mousePressEvent(self, event):
-        self.check.setChecked(not self.check.isChecked())
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        # 3-state cycle: idle → focusing → defeated → idle
+        if self._state == "idle":
+            next_state = "focusing"
+        elif self._state == "focusing":
+            next_state = "defeated"
+        else:
+            next_state = "idle"
+        self.set_state(next_state)
+        self.tapped.emit(self.key, self._name, next_state)
+
+    def mouseDoubleClickEvent(self, event):
+        pass
+        # Keep toggled signal alive for refresh() callers
+        self.toggled.emit(self.key, next_state == "defeated")
+
+    def set_state(self, state):
+        self._state   = state
+        self._defeated = (state == "defeated")
+        self._apply_state(state)
 
     def matches(self, query):
         return query.lower() in self.name_lbl.text().lower()
@@ -261,11 +265,14 @@ class RegionHeader(QWidget):
 
 
 class BossTab(QWidget):
-    def __init__(self, bosses, boss_tracker, on_kill=None, accent=None, api=None, parent=None):
+    def __init__(self, bosses, boss_tracker, on_kill=None, accent=None, api=None,
+                 on_boss_mark=None, ql_sync=None, parent=None):
         super().__init__(parent)
-        self.boss_tracker = boss_tracker
-        self.on_kill = on_kill
-        self._api    = api
+        self.boss_tracker  = boss_tracker
+        self.on_kill       = on_kill
+        self._api          = api
+        self._ql_sync      = ql_sync       # QuestLogSync instance for focus/unmark calls
+        self._on_boss_mark = on_boss_mark  # callback(boss_key) → fires mark_boss, returns rage data
         self.rows = []
         self.region_headers = {}
         self._accent = accent or ACCENT_GOLD
@@ -293,6 +300,19 @@ class BossTab(QWidget):
         top_layout.addWidget(self.search)
         top_layout.addWidget(self.progress_lbl)
         outer.addWidget(top_bar)
+
+        # Focus banner — shown when a boss is in "focusing" state
+        self._focus_banner = QWidget()
+        self._focus_banner.setFixedHeight(32)
+        self._focus_banner.setStyleSheet(f"background: rgba(192,57,15,0.15); border-bottom: 1px solid {ACCENT_RED2};")
+        _fb_layout = QHBoxLayout(self._focus_banner)
+        _fb_layout.setContentsMargins(16, 0, 16, 0)
+        self._focus_lbl = QLabel("")
+        self._focus_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._focus_lbl.setStyleSheet(f"color: {ACCENT_RED2}; letter-spacing: 1px;")
+        _fb_layout.addWidget(self._focus_lbl)
+        self._focus_banner.setVisible(False)
+        outer.addWidget(self._focus_banner)
 
         self.prog_track = QWidget()
         self.prog_track.setFixedHeight(3)
@@ -324,7 +344,7 @@ class BossTab(QWidget):
 
             for b in loc_bosses:
                 row = BossRow(b["key"], b["name"], b["location"], b["defeated"])
-                row.toggled.connect(self._on_toggled)
+                row.tapped.connect(self._on_tapped)
                 self.list_layout.addWidget(row)
                 self.rows.append(row)
                 self.region_headers[location]["rows"].append(row)
@@ -344,18 +364,34 @@ class BossTab(QWidget):
         super().resizeEvent(event)
         self._update_prog_bar()
 
-    def _on_toggled(self, key, defeated):
-        if defeated:
+    def _on_tapped(self, key, name, new_state):
+        import threading
+        if new_state == "focusing":
+            # Tap 1: set focus — send boss_name (human label, not key)
+            self._focus_lbl.setText(f"  ⚔ Fighting: {name}")
+            self._focus_banner.setVisible(True)
+            if self._ql_sync:
+                threading.Thread(target=self._ql_sync.set_focus, args=(name,), daemon=True).start()
+
+        elif new_state == "defeated":
+            # Tap 2: mark defeated — send boss_key ("Name (Location)")
+            self._focus_banner.setVisible(False)
             self.boss_tracker.mark_defeated(key)
             if self.on_kill:
-                tier = self.boss_tracker.get_tier(key)
-                self.on_kill(tier=tier)
-            if self._api:
-                self._api.mark_boss(key)
-        else:
+                self.on_kill(tier=self.boss_tracker.get_tier(key))
+            if self._on_boss_mark:
+                self._on_boss_mark(key)   # handles mark_boss + rage update
+            elif self._ql_sync:
+                threading.Thread(target=self._ql_sync.mark_boss, args=(key,), daemon=True).start()
+
+        else:  # idle — undo defeat
+            # Tap 3: unmark — send boss_key, clear focus
+            self._focus_banner.setVisible(False)
             self.boss_tracker.mark_undefeated(key)
-            if self._api:
-                self._api.unmark_boss(key)
+            if self._ql_sync:
+                threading.Thread(target=self._ql_sync.unmark_boss, args=(key,), daemon=True).start()
+                threading.Thread(target=self._ql_sync.clear_focus, daemon=True).start()
+
         self._update_progress()
 
     def _filter(self, query):
@@ -386,12 +422,12 @@ class BossTab(QWidget):
         lookup = {b["key"]: b["defeated"] for b in boss_list}
         for row in self.rows:
             if row.key in lookup:
-                row.check.blockSignals(True)
-                row.check.setChecked(lookup[row.key])
-                row._defeated = lookup[row.key]
-                row._apply_style(lookup[row.key])
-                row._apply_bg(lookup[row.key])
-                row.check.blockSignals(False)
+                defeated = lookup[row.key]
+                # Don't clobber "focusing" state with a refresh — only sync defeated/idle
+                if defeated and row._state != "defeated":
+                    row.set_state("defeated")
+                elif not defeated and row._state == "defeated":
+                    row.set_state("idle")
         self._update_progress()
 
 
@@ -472,11 +508,17 @@ class MortalityTab(QWidget):
         secondary = QHBoxLayout()
         secondary.setSpacing(0)
 
-        self._dhr_card     = self._make_stat_card("DEATHS / HR", "0.0")
-        self._session_card2 = self._make_stat_card("SESSION TIME", "00:00:00")
+        self._dhr_card      = self._make_stat_card("DEATHS / HR",   "0.0")
+        self._session_card2 = self._make_stat_card("SESSION TIME",  "00:00:00")
+        self._streak_card   = self._make_stat_card("CURRENT STREAK","00:00:00")
+        self._longest_card  = self._make_stat_card("LONGEST LIFE",  "00:00:00")
         secondary.addWidget(self._dhr_card)
         secondary.addSpacing(16)
         secondary.addWidget(self._session_card2)
+        secondary.addSpacing(16)
+        secondary.addWidget(self._streak_card)
+        secondary.addSpacing(16)
+        secondary.addWidget(self._longest_card)
         outer.addLayout(secondary)
 
         outer.addStretch()
@@ -574,6 +616,12 @@ class MortalityTab(QWidget):
         w   = int(self._rage_bar_track.width() * pct)
         self._rage_bar.setFixedWidth(max(0, w))
 
+    def update_timing(self, streak_sec, longest_sec):
+        def _fmt(s):
+            return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
+        self._streak_card._value_lbl.setText(_fmt(streak_sec))
+        self._longest_card._value_lbl.setText(_fmt(longest_sec))
+
     def update_stats(self, session, deaths):
         self._session = session
         self._deaths  = deaths
@@ -635,6 +683,7 @@ class SettingsTab(QWidget):
     hotkeys_changed  = pyqtSignal(dict)
     login_requested  = pyqtSignal()
     logout_requested = pyqtSignal()
+    reset_stats      = pyqtSignal()     # reset deaths + session timers (app + site)
     # emitted from worker thread via App — connected in main.py
     login_succeeded  = pyqtSignal(str, str, list)   # api_key, username, runs
     login_failed     = pyqtSignal(str)               # error message
@@ -725,6 +774,39 @@ class SettingsTab(QWidget):
         ]:
             self._hk_fields[key] = self._make_hotkey_row(outer, label, settings.get(key, default))
 
+        # ── Run Stats ─────────────────────────────────────────────────────────
+        section("Run Stats")
+
+        reset_info = QLabel(
+            "Resets all session deaths, total deaths, rage index, and streak timers "
+            "to zero — both in the app and on QuestLog."
+        )
+        reset_info.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        reset_info.setWordWrap(True)
+        outer.addWidget(reset_info)
+        outer.addSpacing(10)
+
+        reset_stats_btn = QPushButton("RESET ALL STATS")
+        reset_stats_btn.setFixedHeight(38)
+        reset_stats_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(192,57,15,0.10);
+                border: 1px solid {ACCENT_RED2};
+                border-radius: 6px;
+                color: {ACCENT_RED2};
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background: rgba(192,57,15,0.22);
+                border-color: #e04010;
+                color: #e04010;
+            }}
+        """)
+        reset_stats_btn.clicked.connect(self.reset_stats.emit)
+        outer.addWidget(reset_stats_btn)
+
         # ── QuestLog Account ──────────────────────────────────────────────────
         section("QuestLog Account")
 
@@ -796,7 +878,7 @@ class SettingsTab(QWidget):
             ql_lbl.setPixmap(ql_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
         footer_row.addWidget(ql_lbl)
 
-        ver = QLabel("QuestLog Mortality Tracker  v1.0  ·  by Casual Heroes")
+        ver = QLabel("EldenTracker  v1.1  ·  Powered by QuestLog  ·  by Casual Heroes")
         ver.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
         footer_row.addWidget(ver)
 
@@ -1025,6 +1107,8 @@ class CompactStatsBar(QWidget):
         total_col,   self._total_val   = stat("TOTAL DEATHS",   "0")
         dhr_col,     self._dhr_val     = stat("DEATHS / HR",    "0.0")
         time_col,    self._time_val    = stat("SESSION TIME",   "00:00:00")
+        streak_col,  self._streak_val  = stat("CURRENT STREAK", "00:00:00")
+        longest_col, self._longest_val = stat("LONGEST LIFE",   "00:00:00")
         rage_col,    self._rage_val    = stat("FURY",           "Calm")
 
         def sep():
@@ -1045,6 +1129,10 @@ class CompactStatsBar(QWidget):
         sep()
         layout.addLayout(time_col)
         sep()
+        layout.addLayout(streak_col)
+        sep()
+        layout.addLayout(longest_col)
+        sep()
         layout.addLayout(rage_col)
         layout.addStretch()
 
@@ -1054,6 +1142,12 @@ class CompactStatsBar(QWidget):
         line.setFixedWidth(1)
         line.setStyleSheet(f"color: {BORDER_SOLID};")
         return line
+
+    def update_timing(self, streak_sec, longest_sec):
+        def _fmt(s):
+            return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
+        self._streak_val.setText(_fmt(streak_sec))
+        self._longest_val.setText(_fmt(longest_sec))
 
     def update_stats(self, session, deaths):
         self._session_val.setText(str(session.session_deaths))
@@ -1075,22 +1169,25 @@ class CompactStatsBar(QWidget):
 class BossTrackerWindow(QMainWindow):
     switch_run = pyqtSignal()
 
-    def __init__(self, boss_tracker, run_meta, session=None, deaths=None, on_kill=None, rage_label="Rage Index", api=None):
+    def __init__(self, boss_tracker, run_meta, session=None, deaths=None, on_kill=None,
+                 rage_label="Rage Index", api=None, on_boss_mark=None, ql_sync=None):
         super().__init__()
-        self._rage_label = rage_label
+        self._rage_label  = rage_label
         self.boss_tracker = boss_tracker
-        self._run_meta = run_meta
-        self._session  = session
-        self._deaths   = deaths
-        self.on_kill   = on_kill
-        self._api      = api
-        self._settings = _load_settings()
+        self._run_meta    = run_meta
+        self._session     = session
+        self._deaths      = deaths
+        self.on_kill      = on_kill
+        self._api         = api
+        self._ql_sync     = ql_sync
+        self._on_boss_mark = on_boss_mark
+        self._settings    = _load_settings()
 
         game  = run_meta.get("game_id", "").replace("_", " ").title()
         mode  = run_meta.get("mode_id", "").replace("_", " ").title()
         rname = run_meta.get("name", "")
-        self.setWindowTitle(f"{game} — {rname}")
-        self.setWindowIcon(QIcon(LOGO_QL_ICO))
+        self.setWindowTitle(f"EldenTracker — {rname}")
+        self.setWindowIcon(QIcon(LOGO_CH_ICO))
         self.setMinimumSize(560, 720)
         self.resize(600, 820)
         self.setStyleSheet(QSS)
@@ -1170,9 +1267,24 @@ class BossTrackerWindow(QMainWindow):
         """)
         github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL)))
 
+        settings_btn = QPushButton("Settings")
+        settings_btn.setFixedHeight(30)
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {BORDER_SOLID};
+                border-radius: 6px; color: {TEXT_DIM};
+                padding: 0 12px; font-size: 10px; letter-spacing: 0.5px;
+            }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD}; }}
+        """)
+        settings_btn.clicked.connect(self._open_settings_dialog)
+
         h_layout.addWidget(self.switch_btn)
         h_layout.addSpacing(4)
         h_layout.addWidget(self.pin_btn)
+        h_layout.addSpacing(4)
+        h_layout.addWidget(settings_btn)
         h_layout.addSpacing(8)
         h_layout.addWidget(site_btn)
         h_layout.addSpacing(4)
@@ -1189,7 +1301,7 @@ class BossTrackerWindow(QMainWindow):
         root.addWidget(self.tabs)
 
         self._boss_tabs = {}   # group_label → BossTab
-        self._build_boss_tabs(boss_tracker, on_kill, self._api)
+        self._build_boss_tabs(boss_tracker, on_kill, self._api, self._on_boss_mark, self._ql_sync)
 
         self.mortality_tab = MortalityTab(session=session, deaths=deaths, rage_label=rage_label)
         self.mortality_tab.sig_add_death.connect(self._on_add_death)
@@ -1203,12 +1315,107 @@ class BossTrackerWindow(QMainWindow):
         self.settings_tab.compact_changed.connect(self._on_compact)
 
         self.tabs.addTab(self.mortality_tab, "MORTALITY")
-        self.tabs.addTab(self.settings_tab,  "SETTINGS")
 
         if self._settings.get("pin", False):
             self._apply_pin(True)
         if self._settings.get("compact", False):
             self._on_compact(True)
+
+    def _open_settings_dialog(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Settings")
+        dlg.setMinimumSize(520, 640)
+        dlg.setStyleSheet(QSS)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        # Fresh tab owned by the dialog — avoids reparent/signal-breakage issues.
+        # Forward signals up so App can handle them.
+        dlg_settings = SettingsTab(self._settings)
+        dlg_settings.opacity_changed.connect(self._on_opacity)
+        dlg_settings.pin_changed.connect(self._apply_pin)
+        dlg_settings.compact_changed.connect(self._on_compact)
+        dlg_settings.hotkeys_changed.connect(
+            lambda hk: self.settings_tab.hotkeys_changed.emit(hk)
+        )
+        dlg_settings.login_requested.connect(
+            lambda: self.settings_tab.login_requested.emit()
+        )
+        dlg_settings.logout_requested.connect(
+            lambda: self.settings_tab.logout_requested.emit()
+        )
+        dlg_settings.reset_stats.connect(
+            lambda: self.settings_tab.reset_stats.emit()
+        )
+        root.addWidget(dlg_settings)
+
+        # Stream overlays at the bottom if this run has a server token
+        token = self._run_meta.get("questlog_token", "") if self._run_meta else ""
+        if token and token != "__local__":
+            stream_widget = self._make_stream_info(token)
+            root.addWidget(stream_widget)
+
+        dlg.exec()
+
+    def _make_stream_info(self, token):
+        from PyQt6.QtWidgets import QApplication
+        widget = QWidget()
+        widget.setStyleSheet(f"background: {BG_SURFACE}; border-top: 1px solid {BORDER_SOLID};")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(4)
+
+        hdr = QLabel("STREAM OVERLAYS")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px;")
+        layout.addWidget(hdr)
+        layout.addSpacing(4)
+
+        base = "https://questlog.casual-heroes.com/soulslike"
+        urls = [
+            ("Web Tracker",        f"{base}/runs/{token}/"),
+            ("Combined Overlay",   f"{base}/overlay/{token}/combined/"),
+            ("Mortality Overlay",  f"{base}/overlay/{token}/mortality/"),
+            ("Deaths Overlay",     f"{base}/overlay/{token}/deaths/"),
+            ("Hollow Overlay",     f"{base}/overlay/{token}/hollow/"),
+            ("Collection Overlay", f"{base}/overlay/{token}/collection/"),
+        ]
+
+        copy_style = f"""
+            QPushButton {{
+                background: rgba(201,168,76,0.1); border: 1px solid {ACCENT_GOLD};
+                border-radius: 4px; color: {ACCENT_GOLD}; font-size: 9px; font-weight: 700;
+                padding: 0;
+            }}
+            QPushButton:hover {{ background: rgba(201,168,76,0.22); }}
+        """
+
+        for label, url in urls:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.setContentsMargins(0, 0, 0, 0)
+
+            lbl = QLabel(f"<b>{label}</b>")
+            lbl.setFixedWidth(130)
+            lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 11px;")
+
+            url_lbl = QLabel(url)
+            url_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px;")
+            url_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+            copy_btn = QPushButton("Copy")
+            copy_btn.setFixedSize(44, 20)
+            copy_btn.setStyleSheet(copy_style)
+            _url = url
+            copy_btn.clicked.connect(lambda _, u=_url: QApplication.clipboard().setText(u))
+
+            row.addWidget(lbl)
+            row.addWidget(url_lbl, 1)
+            row.addWidget(copy_btn)
+            layout.addLayout(row)
+
+        return widget
 
     # Short display labels for groups whose full names overflow the tab bar
     _TAB_LABELS = {
@@ -1220,7 +1427,7 @@ class BossTrackerWindow(QMainWindow):
         "Shadow of the Erdtree":        "SOTE",
     }
 
-    def _build_boss_tabs(self, boss_tracker, on_kill, api=None):
+    def _build_boss_tabs(self, boss_tracker, on_kill, api=None, on_boss_mark=None, ql_sync=None):
         all_bosses = boss_tracker.export()
         seen_groups = []
         by_group = {}
@@ -1232,7 +1439,8 @@ class BossTrackerWindow(QMainWindow):
             by_group[g].append(b)
 
         for group in seen_groups:
-            tab = BossTab(by_group[group], boss_tracker, on_kill=on_kill, api=api)
+            tab = BossTab(by_group[group], boss_tracker, on_kill=on_kill,
+                          api=api, on_boss_mark=on_boss_mark, ql_sync=ql_sync)
             label = self._TAB_LABELS.get(group, group.upper())
             self._boss_tabs[group] = tab
             self.tabs.insertTab(self.tabs.count() - 0, tab, label)
@@ -1302,7 +1510,7 @@ class BossTrackerWindow(QMainWindow):
             if self._api:
                 self._api.post_boss_reset()
 
-    def refresh(self, boss_list, session=None, deaths=None):
+    def refresh(self, boss_list, session=None, deaths=None, ql_sync=None):
         by_group = {}
         for b in boss_list:
             by_group.setdefault(b["group"], []).append(b)
@@ -1315,6 +1523,12 @@ class BossTrackerWindow(QMainWindow):
         if s and d:
             self.stats_bar.update_stats(s, d)
             self.mortality_tab.update_stats(s, d)
+
+        if ql_sync and ql_sync.running:
+            self.stats_bar.update_timing(
+                ql_sync.current_streak_sec(),
+                ql_sync.longest_life_sec(),
+            )
 
 
 def launch_boss_tracker(boss_tracker):

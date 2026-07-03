@@ -31,7 +31,7 @@ def list_runs():
     return runs
 
 
-def create_run(name, game_id, mode_id):
+def create_run(name, game_id, mode_id, questlog_token=None):
     """Create a new run directory and meta.json. Returns the run slug."""
     base = _slug(name)
     slug = base
@@ -50,6 +50,8 @@ def create_run(name, game_id, mode_id):
         "mode_id":  mode_id,
         "created":  time.time(),
     }
+    if questlog_token:
+        meta["questlog_token"] = questlog_token
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 

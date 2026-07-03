@@ -11,7 +11,7 @@ class Session:
         self._process_name = process_name.lower().replace(".exe", "")
         self._state_file   = os.path.join(run_dir, "session.json")
         self.active        = False
-        self.start_time    = None
+        self.start_time    = time.time()   # always count from run launch, not game detection
         self.end_time      = None
         self.session_deaths = 0
         self.total_deaths  = self._load_total_deaths()
@@ -41,6 +41,10 @@ class Session:
         self.session_deaths = 0
         self.save()
 
+    def reset_session_time(self):
+        self.start_time = time.time()
+        self.end_time   = None
+
     def stop(self):
         self.active         = False
         self.end_time       = time.time()
@@ -48,9 +52,7 @@ class Session:
         self.save()
 
     def elapsed_seconds(self):
-        if self.start_time is None:
-            return 0
-        end = self.end_time if not self.active else time.time()
+        end = self.end_time if self.end_time else time.time()
         return end - self.start_time
 
     def elapsed_str(self):
