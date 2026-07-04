@@ -16,7 +16,8 @@ LOGO_QL_ICO = _assets_path("QL1.ico")
 LOGO_CH     = _assets_path("CH.png")
 LOGO_CH_ICO = _assets_path("CH.ico")
 SITE_URL    = "https://questlog.casual-heroes.com"
-GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
+GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
+APP_VERSION = "1.0.2"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -508,10 +509,11 @@ class MortalityTab(QWidget):
         secondary = QHBoxLayout()
         secondary.setSpacing(0)
 
-        self._dhr_card      = self._make_stat_card("DEATHS / HR",   "0.0")
+        self._dhr_card      = self._make_stat_card("DEATHS / HR",   "--", sub="")
         self._session_card2 = self._make_stat_card("SESSION TIME",  "00:00:00")
         self._streak_card   = self._make_stat_card("CURRENT STREAK","00:00:00")
         self._longest_card  = self._make_stat_card("LONGEST LIFE",  "00:00:00")
+        self._survival_card = self._make_stat_card("SURVIVAL TIME", "00:00:00")
         secondary.addWidget(self._dhr_card)
         secondary.addSpacing(16)
         secondary.addWidget(self._session_card2)
@@ -519,6 +521,8 @@ class MortalityTab(QWidget):
         secondary.addWidget(self._streak_card)
         secondary.addSpacing(16)
         secondary.addWidget(self._longest_card)
+        secondary.addSpacing(16)
+        secondary.addWidget(self._survival_card)
         outer.addLayout(secondary)
 
         outer.addStretch()
@@ -574,7 +578,7 @@ class MortalityTab(QWidget):
         hotkeys.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(hotkeys)
 
-    def _make_stat_card(self, label, value):
+    def _make_stat_card(self, label, value, sub=None):
         card = QWidget()
         card.setStyleSheet(f"""
             QWidget {{
@@ -602,6 +606,16 @@ class MortalityTab(QWidget):
 
         card._value_lbl = val
         card._label_lbl = lbl
+        card._sub_lbl   = None
+
+        if sub is not None:
+            sub_lbl = QLabel(sub)
+            sub_lbl.setFont(QFont("Segoe UI", 8))
+            sub_lbl.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
+            sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(sub_lbl)
+            card._sub_lbl = sub_lbl
+
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         return card
 
@@ -616,11 +630,12 @@ class MortalityTab(QWidget):
         w   = int(self._rage_bar_track.width() * pct)
         self._rage_bar.setFixedWidth(max(0, w))
 
-    def update_timing(self, streak_sec, longest_sec):
+    def update_timing(self, streak_sec, longest_sec, survival_sec=0):
         def _fmt(s):
             return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
         self._streak_card._value_lbl.setText(_fmt(streak_sec))
         self._longest_card._value_lbl.setText(_fmt(longest_sec))
+        self._survival_card._value_lbl.setText(_fmt(survival_sec))
 
     def update_stats(self, session, deaths):
         self._session = session
@@ -629,7 +644,18 @@ class MortalityTab(QWidget):
         self._session_card._value_lbl.setText(str(session.session_deaths))
         self._total_card._value_lbl.setText(str(session.total_deaths))
         self._session_card2._value_lbl.setText(session.elapsed_str())
-        self._dhr_card._value_lbl.setText(str(deaths.deaths_per_hour()))
+        _dhr     = deaths.deaths_per_hour()
+        _ses_sec = int(session.elapsed_seconds())
+        self._dhr_card._value_lbl.setText("--" if _dhr is None else str(_dhr))
+        if self._dhr_card._sub_lbl is not None:
+            if _dhr is None:
+                _rem = max(0, 600 - _ses_sec)
+                _m, _s = divmod(_rem, 60)
+                self._dhr_card._sub_lbl.setText(f"{_m}m {_s:02d}s until rate shows")
+            else:
+                self._dhr_card._sub_lbl.setText(
+                    f"{session.session_deaths} deaths / {session.elapsed_str()}"
+                )
 
         pct, state, color = deaths.rage_state()
         hollow = deaths.hollow_streak()
@@ -650,6 +676,26 @@ class MortalityTab(QWidget):
         self._update_rage_bar_width()
 
 
+_KEYRING_SERVICE = "QuestLog-EldenTracker"
+_KEYRING_USER    = "api_key"
+
+def _keyring_save(api_key: str):
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, api_key)
+        return True
+    except Exception:
+        return False
+
+def _keyring_load() -> str:
+    try:
+        import keyring
+        val = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USER)
+        return val or ""
+    except Exception:
+        return ""
+
+
 def _load_settings():
     defaults = {
         "opacity":         100,
@@ -665,16 +711,442 @@ def _load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
-                return {**defaults, **json.load(f)}
+                data = {**defaults, **json.load(f)}
         except Exception:
-            pass
-    return defaults
+            data = defaults
+    else:
+        data = defaults
+
+    # Prefer keyring for api_key; fall back to whatever is in settings.json
+    kr_key = _keyring_load()
+    if kr_key:
+        data["api_key"] = kr_key
+    return data
+
 
 def _save_settings(settings):
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    # Persist api_key to keyring; strip it from the JSON file
+    api_key = settings.get("api_key", "")
+    if api_key:
+        saved_to_keyring = _keyring_save(api_key)
+    else:
+        saved_to_keyring = False
+    on_disk = dict(settings)
+    if saved_to_keyring:
+        on_disk.pop("api_key", None)  # don't duplicate in plaintext
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=2)
+        json.dump(on_disk, f, indent=2)
 
+
+class ItemsTab(QWidget):
+    """Item collection checklist — loaded from QuestLog status API."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ql_sync   = None
+        self._local_run = None
+        self._rows      = {}   # item_name → (widget, collected_state)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Header bar ───────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setFixedHeight(48)
+        hdr.setStyleSheet(f"background: {BG_SURFACE}; border-bottom: 1px solid {BORDER_SOLID};")
+        hdr_l = QHBoxLayout(hdr)
+        hdr_l.setContentsMargins(20, 0, 20, 0)
+
+        self._title_lbl = QLabel("ITEMS")
+        self._title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._title_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; letter-spacing: 2px;")
+
+        self._progress_lbl = QLabel("")
+        self._progress_lbl.setFont(QFont("Segoe UI", 10))
+        self._progress_lbl.setStyleSheet(f"color: {TEXT_MUTED};")
+
+        hdr_l.addWidget(self._title_lbl)
+        hdr_l.addStretch()
+        hdr_l.addWidget(self._progress_lbl)
+        root.addWidget(hdr)
+
+        # ── Progress bar ─────────────────────────────────────────────────────
+        self._bar_track = QWidget()
+        self._bar_track.setFixedHeight(3)
+        self._bar_track.setStyleSheet(f"background: {BORDER_SOLID};")
+        self._bar_fill = QWidget(self._bar_track)
+        self._bar_fill.setFixedHeight(3)
+        self._bar_fill.move(0, 0)
+        self._bar_fill.setFixedWidth(0)
+        self._bar_fill.setStyleSheet(f"background: {GREEN_LIVE};")
+        root.addWidget(self._bar_track)
+
+        # ── No-sync gate ─────────────────────────────────────────────────────
+        self._gate = QWidget()
+        gate_l = QVBoxLayout(self._gate)
+        gate_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gate_lbl = QLabel("Connect your QuestLog account and start a\nsynced run to track item collection.")
+        gate_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gate_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
+        gate_l.addWidget(gate_lbl)
+        root.addWidget(self._gate)
+
+        # ── Scroll area ──────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("background: transparent;")
+        self._scroll.hide()
+
+        self._list_widget = QWidget()
+        self._list_widget.setStyleSheet("background: transparent;")
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(0)
+        self._list_layout.addStretch()
+        self._scroll.setWidget(self._list_widget)
+        root.addWidget(self._scroll)
+
+    def set_ql_sync(self, ql_sync):
+        self._ql_sync   = ql_sync
+        self._local_run = None
+        active = bool(ql_sync)
+        if active:
+            self._gate.hide()
+            self._scroll.show()
+        else:
+            self._gate.show()
+            self._scroll.hide()
+            self._rows.clear()
+            self._clear_list()
+
+    def set_local_run(self, local_run):
+        self._local_run = local_run
+        self._ql_sync   = None
+        active = bool(local_run)
+        if active:
+            self._gate.hide()
+            self._scroll.show()
+        else:
+            self._gate.show()
+            self._scroll.hide()
+            self._rows.clear()
+            self._clear_list()
+
+    def refresh(self, items, collected, total):
+        self._progress_lbl.setText(f"{collected} / {total}")
+        if total > 0:
+            pct = collected / total
+            fill = int(self._bar_track.width() * pct)
+            self._bar_fill.setFixedWidth(max(0, fill))
+
+        # Rebuild list if item set changed
+        current_names = set(self._rows.keys())
+        new_names     = {it["name"] for it in items}
+        if current_names != new_names:
+            self._rebuild(items)
+        else:
+            # Just update collected states
+            for it in items:
+                name = it["name"]
+                if name in self._rows:
+                    row_w, _ = self._rows[name]
+                    self._rows[name] = (row_w, it["collected"])
+                    self._update_row_style(row_w, it["collected"])
+
+    def _rebuild(self, items):
+        self._clear_list()
+        self._rows.clear()
+
+        TYPE_ORDER  = ["weapon", "armor", "talisman", "spell", "spirit_ash", "crystal_tear"]
+        TYPE_LABELS = {
+            "weapon": "WEAPONS", "armor": "ARMOR", "talisman": "TALISMANS",
+            "spell": "SPELLS", "spirit_ash": "SPIRIT ASHES", "crystal_tear": "CRYSTAL TEARS",
+        }
+        grouped = {}
+        for it in items:
+            t = it.get("type", "weapon")
+            grouped.setdefault(t, []).append(it)
+
+        layout = self._list_layout
+        # Remove stretch, add items, re-add stretch
+        stretch = layout.takeAt(layout.count() - 1)
+
+        for t in TYPE_ORDER:
+            if t not in grouped:
+                continue
+            # Section header
+            sec = QLabel(TYPE_LABELS.get(t, t.upper()))
+            sec.setFixedHeight(28)
+            sec.setStyleSheet(
+                f"color: {TEXT_MUTED}; font-size: 9px; font-weight: 700; "
+                f"letter-spacing: 1.5px; padding-left: 20px; "
+                f"background: {BG_SURFACE}; border-bottom: 1px solid {BORDER_SOLID};"
+            )
+            layout.addWidget(sec)
+            for it in sorted(grouped[t], key=lambda x: x["name"]):
+                row_w = self._make_row(it)
+                layout.addWidget(row_w)
+                self._rows[it["name"]] = (row_w, it["collected"])
+
+        layout.addStretch()
+
+    def _make_row(self, item):
+        row = QWidget()
+        row.setFixedHeight(44)
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
+        row._item_name      = item["name"]
+        row._item_collected = item["collected"]
+
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(20, 0, 20, 0)
+        rl.setSpacing(12)
+
+        check = QLabel("✓" if item["collected"] else "○")
+        check.setFixedWidth(18)
+        check.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        check.setFont(QFont("Segoe UI", 13))
+        row._check_lbl = check
+
+        name_lbl = QLabel(item["name"])
+        name_lbl.setFont(QFont("Segoe UI", 12))
+        row._name_lbl = name_lbl
+
+        hint = item.get("hint") or ""
+        hint_lbl = QLabel(hint)
+        hint_lbl.setFont(QFont("Segoe UI", 10))
+        hint_lbl.setStyleSheet(f"color: {TEXT_MUTED};")
+        hint_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        rl.addWidget(check)
+        rl.addWidget(name_lbl, 1)
+        rl.addWidget(hint_lbl)
+
+        self._update_row_style(row, item["collected"])
+
+        row.mousePressEvent = lambda e, r=row: self._on_row_click(r)
+        return row
+
+    def _update_row_style(self, row, collected):
+        row._item_collected = collected
+        if collected:
+            row.setStyleSheet(f"background: rgba(34,197,94,0.06); border-bottom: 1px solid {BORDER_SOLID};")
+            row._check_lbl.setText("✓")
+            row._check_lbl.setStyleSheet(f"color: {GREEN_LIVE};")
+            row._name_lbl.setStyleSheet(f"color: {TEXT_MUTED}; text-decoration: line-through;")
+        else:
+            row.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER_SOLID};")
+            row._check_lbl.setText("○")
+            row._check_lbl.setStyleSheet(f"color: {TEXT_DIM};")
+            row._name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
+
+    def _on_row_click(self, row):
+        backend = self._ql_sync or self._local_run
+        if not backend:
+            return
+        name      = row._item_name
+        collected = row._item_collected
+        if collected:
+            backend.uncollect_item(name)
+            self._update_row_style(row, False)
+            self._rows[name] = (row, False)
+        else:
+            backend.collect_item(name)
+            self._update_row_style(row, True)
+            self._rows[name] = (row, True)
+        # Update progress immediately without waiting for next tick
+        new_collected = sum(1 for _, c in self._rows.values() if c)
+        total = len(self._rows)
+        self._progress_lbl.setText(f"{new_collected} / {total}")
+        if total > 0:
+            fill = int(self._bar_track.width() * new_collected / total)
+            self._bar_fill.setFixedWidth(max(0, fill))
+
+    def _clear_list(self):
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Recompute progress bar width on resize
+        if hasattr(self, '_bar_track'):
+            self._bar_track.update()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DeathLogTab(QWidget):
+    """Recent death log — local append on death, refreshed from status poll."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._entries = []   # list of dicts: {boss, at, life, session_deaths, total_deaths}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Header ───────────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setFixedHeight(48)
+        hdr.setStyleSheet(f"background: {BG_SURFACE}; border-bottom: 1px solid {BORDER_SOLID};")
+        hdr_l = QHBoxLayout(hdr)
+        hdr_l.setContentsMargins(20, 0, 20, 0)
+
+        self._title_lbl = QLabel("DEATH LOG")
+        self._title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._title_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; letter-spacing: 2px;")
+
+        self._count_lbl = QLabel("")
+        self._count_lbl.setFont(QFont("Segoe UI", 10))
+        self._count_lbl.setStyleSheet(f"color: {TEXT_MUTED};")
+
+        hdr_l.addWidget(self._title_lbl)
+        hdr_l.addStretch()
+        hdr_l.addWidget(self._count_lbl)
+        root.addWidget(hdr)
+
+        # ── No-sync gate ─────────────────────────────────────────────────────
+        self._gate = QWidget()
+        gate_l = QVBoxLayout(self._gate)
+        gate_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gate_lbl = QLabel("Connect your QuestLog account and start a\nsynced run to see your death log.")
+        gate_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gate_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
+        gate_l.addWidget(gate_lbl)
+        root.addWidget(self._gate)
+
+        # ── Scroll area ──────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("background: transparent;")
+        self._scroll.hide()
+
+        self._list_widget = QWidget()
+        self._list_widget.setStyleSheet("background: transparent;")
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(0)
+        self._list_layout.addStretch()
+        self._scroll.setWidget(self._list_widget)
+        root.addWidget(self._scroll)
+
+    def set_active(self, active: bool):
+        if active:
+            self._gate.hide()
+            self._scroll.show()
+        else:
+            self._gate.show()
+            self._scroll.hide()
+            self._entries.clear()
+            self._rebuild()
+
+    def append_death(self, boss, life_sec, session_deaths, total_deaths):
+        """Called immediately on death event (main thread via signal)."""
+        import time as _time
+        self._entries.insert(0, {
+            "boss":           boss or "",
+            "at":             int(_time.time()),
+            "life":           life_sec,
+            "session_deaths": session_deaths,
+            "total_deaths":   total_deaths,
+        })
+        self._entries = self._entries[:10]
+        self._rebuild()
+
+    def load_from_status(self, recent_deaths, session_deaths, total_deaths):
+        """Refresh from status poll — replaces entries list."""
+        new_entries = list(recent_deaths[:10])
+        self._count_lbl.setText(f"{total_deaths} total  |  {session_deaths} this session")
+        # Only rebuild widgets when the entry list actually changed
+        if new_entries != self._entries:
+            self._entries = new_entries
+            self._rebuild()
+
+    def update_counts(self, session_deaths, total_deaths):
+        """Update header counts without rebuilding the list (for local runs)."""
+        self._count_lbl.setText(f"{total_deaths} total  |  {session_deaths} this session")
+
+    def _rebuild(self):
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        import time as _time
+        now = int(_time.time())
+
+        for i, e in enumerate(self._entries):
+            row = self._make_row(e, i + 1, now)
+            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+
+    def _make_row(self, entry, num, now):
+        row = QWidget()
+        row.setFixedHeight(56)
+        row.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER_SOLID};")
+
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(20, 8, 20, 8)
+        rl.setSpacing(12)
+
+        # Death number
+        num_lbl = QLabel(f"#{entry.get('total_deaths', num)}" if entry.get('total_deaths') else f"#{num}")
+        num_lbl.setFixedWidth(42)
+        num_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        num_lbl.setStyleSheet(f"color: {ACCENT_GOLD};")
+
+        # Boss / location
+        boss = entry.get("boss") or ""
+        boss_lbl = QLabel(boss if boss else "[Unknown]")
+        boss_lbl.setFont(QFont("Segoe UI", 12))
+        boss_lbl.setStyleSheet(f"color: {TEXT_PRIMARY if boss else TEXT_MUTED};")
+
+        # Right column: survived time + ago
+        right = QVBoxLayout()
+        right.setSpacing(2)
+        right.setContentsMargins(0, 0, 0, 0)
+
+        life_sec = entry.get("life", 0)
+        if life_sec:
+            m, s = divmod(life_sec, 60)
+            survived = f"survived  {m}m {s:02d}s"
+        else:
+            survived = "survived  —"
+        surv_lbl = QLabel(survived)
+        surv_lbl.setFont(QFont("Segoe UI", 10))
+        surv_lbl.setStyleSheet(f"color: {TEXT_MUTED};")
+        surv_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        at = entry.get("at", 0)
+        ago = ""
+        if at:
+            delta = now - at
+            if delta < 60:
+                ago = "just now"
+            elif delta < 3600:
+                ago = f"{delta // 60}m ago"
+            else:
+                ago = f"{delta // 3600}h ago"
+        ago_lbl = QLabel(ago)
+        ago_lbl.setFont(QFont("Segoe UI", 9))
+        ago_lbl.setStyleSheet(f"color: {TEXT_DIM};")
+        ago_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        right.addWidget(surv_lbl)
+        right.addWidget(ago_lbl)
+
+        rl.addWidget(num_lbl)
+        rl.addWidget(boss_lbl, 1)
+        rl.addLayout(right)
+        return row
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SettingsTab(QWidget):
     opacity_changed  = pyqtSignal(int)
@@ -878,7 +1350,7 @@ class SettingsTab(QWidget):
             ql_lbl.setPixmap(ql_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
         footer_row.addWidget(ql_lbl)
 
-        ver = QLabel("EldenTracker  v1.1  ·  Powered by QuestLog  ·  by Casual Heroes")
+        ver = QLabel(f"EldenTracker  v{APP_VERSION}  ·  Powered by QuestLog  ·  by Casual Heroes")
         ver.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
         footer_row.addWidget(ver)
 
@@ -1107,9 +1579,10 @@ class CompactStatsBar(QWidget):
         total_col,   self._total_val   = stat("TOTAL DEATHS",   "0")
         dhr_col,     self._dhr_val     = stat("DEATHS / HR",    "0.0")
         time_col,    self._time_val    = stat("SESSION TIME",   "00:00:00")
-        streak_col,  self._streak_val  = stat("CURRENT STREAK", "00:00:00")
-        longest_col, self._longest_val = stat("LONGEST LIFE",   "00:00:00")
-        rage_col,    self._rage_val    = stat("FURY",           "Calm")
+        streak_col,   self._streak_val   = stat("CURRENT STREAK", "00:00:00")
+        longest_col,  self._longest_val  = stat("LONGEST LIFE",   "00:00:00")
+        survival_col, self._survival_val = stat("SURVIVAL TIME",  "00:00:00")
+        rage_col,     self._rage_val     = stat("FURY",           "Calm")
 
         def sep():
             layout.addSpacing(20)
@@ -1133,6 +1606,8 @@ class CompactStatsBar(QWidget):
         sep()
         layout.addLayout(longest_col)
         sep()
+        layout.addLayout(survival_col)
+        sep()
         layout.addLayout(rage_col)
         layout.addStretch()
 
@@ -1143,16 +1618,18 @@ class CompactStatsBar(QWidget):
         line.setStyleSheet(f"color: {BORDER_SOLID};")
         return line
 
-    def update_timing(self, streak_sec, longest_sec):
+    def update_timing(self, streak_sec, longest_sec, survival_sec=0):
         def _fmt(s):
             return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
         self._streak_val.setText(_fmt(streak_sec))
         self._longest_val.setText(_fmt(longest_sec))
+        self._survival_val.setText(_fmt(survival_sec))
 
     def update_stats(self, session, deaths):
         self._session_val.setText(str(session.session_deaths))
         self._total_val.setText(str(session.total_deaths))
-        self._dhr_val.setText(str(deaths.deaths_per_hour()))
+        _dhr2 = deaths.deaths_per_hour()
+        self._dhr_val.setText("--" if _dhr2 is None else str(_dhr2))
         self._time_val.setText(session.elapsed_str())
 
         pct, state, color = deaths.rage_state()
@@ -1182,6 +1659,7 @@ class BossTrackerWindow(QMainWindow):
         self._ql_sync     = ql_sync
         self._on_boss_mark = on_boss_mark
         self._settings    = _load_settings()
+        self._closing     = False
 
         game  = run_meta.get("game_id", "").replace("_", " ").title()
         mode  = run_meta.get("mode_id", "").replace("_", " ").title()
@@ -1223,7 +1701,7 @@ class BossTrackerWindow(QMainWindow):
         title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; letter-spacing: 2px;")
 
-        mode_lbl = QLabel(f"QuestLog Mortality Tracker  ·  {game}  ·  {mode}")
+        mode_lbl = QLabel(f"QuestLog Elden Ring Tracker  ·  {game}  ·  {mode}")
         mode_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
 
         title_col.addWidget(title_lbl)
@@ -1314,7 +1792,15 @@ class BossTrackerWindow(QMainWindow):
         self.settings_tab.pin_changed.connect(self._apply_pin)
         self.settings_tab.compact_changed.connect(self._on_compact)
 
+        self.items_tab     = ItemsTab()
+        self.death_log_tab = DeathLogTab()
+
+        self.items_tab.set_ql_sync(ql_sync)
+        self.death_log_tab.set_active(bool(ql_sync))
+
         self.tabs.addTab(self.mortality_tab, "MORTALITY")
+        self.tabs.addTab(self.items_tab,     "ITEMS")
+        self.tabs.addTab(self.death_log_tab, "DEATHS")
 
         if self._settings.get("pin", False):
             self._apply_pin(True)
@@ -1456,7 +1942,9 @@ class BossTrackerWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._apply_opacity(self._settings.get("opacity", 100)))
 
     def closeEvent(self, event):
-        self.switch_run.emit()
+        if not self._closing:
+            self._closing = True
+            self.switch_run.emit()
         event.accept()
 
     def _apply_opacity(self, pct):
@@ -1510,7 +1998,7 @@ class BossTrackerWindow(QMainWindow):
             if self._api:
                 self._api.post_boss_reset()
 
-    def refresh(self, boss_list, session=None, deaths=None, ql_sync=None):
+    def refresh(self, boss_list, session=None, deaths=None, ql_sync=None, local_run=None):
         by_group = {}
         for b in boss_list:
             by_group.setdefault(b["group"], []).append(b)
@@ -1525,9 +2013,32 @@ class BossTrackerWindow(QMainWindow):
             self.mortality_tab.update_stats(s, d)
 
         if ql_sync and ql_sync.running:
-            self.stats_bar.update_timing(
-                ql_sync.current_streak_sec(),
-                ql_sync.longest_life_sec(),
+            streak   = ql_sync.current_streak_sec()
+            longest  = ql_sync.longest_life_sec()
+            survival = ql_sync.current_survival_sec()
+            self.stats_bar.update_timing(streak, longest, survival)
+            self.mortality_tab.update_timing(streak, longest, survival)
+
+            items, collected, total = ql_sync.get_items()
+            if items:
+                self.items_tab.refresh(items, collected, total)
+
+            recent_deaths = ql_sync.get_recent_deaths()
+            if recent_deaths:
+                self.death_log_tab.load_from_status(
+                    recent_deaths,
+                    s.session_deaths if s else 0,
+                    s.total_deaths   if s else 0,
+                )
+
+        elif local_run:
+            items, collected, total = local_run.get_items()
+            self.items_tab.refresh(items, collected, total)
+            recent = local_run.get_recent_deaths()
+            self.death_log_tab.load_from_status(
+                recent,
+                s.session_deaths if s else 0,
+                s.total_deaths   if s else 0,
             )
 
 

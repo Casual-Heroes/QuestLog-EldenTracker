@@ -39,7 +39,7 @@ def setup():
     root.addHandler(fh)
     root.addHandler(sh)
 
-    _LOGGER.info("=== QuestLog Mortality Tracker — session started ===")
+    _LOGGER.info("=== QuestLog Elden Ring Tracker — session started ===")
     _LOGGER.info("Python %s  |  %s", sys.version.split()[0], platform.platform())
     _LOGGER.info("Log file: %s", _LOG_FILE)
 
@@ -81,14 +81,14 @@ def _show_crash_dialog(tb_text: str):
         dlg.setWindowTitle("QuestLog — Crash Report")
         dlg.setIcon(QMessageBox.Icon.Critical)
         dlg.setText(
-            "<b>QuestLog Mortality Tracker encountered an unexpected error and needs to close.</b>"
+            "<b>QuestLog Elden Ring Tracker encountered an unexpected error and needs to close.</b>"
             "<br><br>"
             "A log file has been saved. Please send it to the developer so this can be fixed."
         )
         dlg.setInformativeText(
             f"<b>Log file:</b><br><code>{_LOG_FILE}</code>"
             "<br><br>"
-            "Send to: <b>trocco@casual-heroes.com</b>"
+            "Send to: <b>support@casual-heroes.com</b>"
         )
         dlg.setDetailedText(tb_text)
 

@@ -14,7 +14,7 @@ def write_state(session, death_tracker, boss_tracker, run_dir=None, rage_label="
         "session_deaths":  session.session_deaths,
         "total_deaths":    session.total_deaths,
         "elapsed":         session.elapsed_str(),
-        "deaths_per_hour": death_tracker.deaths_per_hour(),
+        "deaths_per_hour": death_tracker.deaths_per_hour(),   # None = under 10-min threshold
         "rage_label":      rage_label,
         "rage_pct":        rage_pct,
         "rage_name":       rage_name,

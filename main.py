@@ -50,6 +50,12 @@ class _RageReady(QObject):
 class _CloudBuildsReady(QObject):
     ready = pyqtSignal(list)  # list of build dicts from profile API
 
+class _BuildPollReady(QObject):
+    updated = pyqtSignal(list)  # flat sorted build list from poller
+
+class _RunPollReady(QObject):
+    updated = pyqtSignal(list, list)  # active_runs, run_history
+
 
 def _start_overlay_server():
     overlay_dir = _overlay_path()
@@ -68,6 +74,14 @@ def _start_overlay_server():
         log.warning("Overlay port %d already in use — skipping.", OVERLAY_PORT)
 
 
+def _clamped_geo_from(geo, dst_win):
+    """Return a QRect based on geo, clamped to dst_win's minimum size."""
+    from PyQt6.QtCore import QRect
+    minw = dst_win.minimumWidth()
+    minh = dst_win.minimumHeight()
+    return QRect(geo.x(), geo.y(), max(geo.width(), minw), max(geo.height(), minh))
+
+
 class SelectorWindow(QMainWindow):
     def __init__(self, app_controller):
         super().__init__()
@@ -75,12 +89,18 @@ class SelectorWindow(QMainWindow):
         self.setWindowTitle("EldenTracker — Powered by QuestLog")
         self.setWindowIcon(QIcon(_ICO_CH))
         self.setMinimumSize(1280, 720)
+        self.setStyleSheet("QMainWindow { background: #09090f; }")
+        from PyQt6.QtGui import QPalette, QColor
+        _mw_pal = self.palette()
+        _mw_pal.setColor(QPalette.ColorRole.Window, QColor("#09090f"))
+        self.setPalette(_mw_pal)
 
         from PyQt6.QtWidgets import QTabWidget
         from PyQt6.QtGui import QFont
 
         tabs = QTabWidget()
         tabs.setStyleSheet("""
+            QTabWidget { background: #09090f; }
             QTabWidget::pane { border: none; background: #09090f; }
             QTabBar { background: #0f1018; border-bottom: 1px solid #1e1f2e; }
             QTabBar::tab {
@@ -93,6 +113,12 @@ class SelectorWindow(QMainWindow):
             QTabBar::tab:hover:!selected { color: #f1f0f5; }
         """)
         tabs.setFont(QFont("Segoe UI", 10))
+        from PyQt6.QtGui import QPalette, QColor
+        _pal = tabs.palette()
+        _pal.setColor(QPalette.ColorRole.Window, QColor("#09090f"))
+        _pal.setColor(QPalette.ColorRole.Base, QColor("#09090f"))
+        tabs.setPalette(_pal)
+        tabs.setAutoFillBackground(True)
 
         # Runs tab
         self._widget = RunSelectorWidget()
@@ -125,7 +151,10 @@ class App:
         self._selector_win._widget.refresh_requested.connect(self._refresh_server_runs)
         self._selector_win._widget.settings_requested.connect(self._open_settings)
         self._build_planner = self._selector_win._build_planner
+        self._build_planner.cloud_build_changed.connect(self._on_cloud_build_changed)
         self._tracker      = None
+        self._tracker_was_maximized = False   # captured at show time, not close time
+        self._tracker_geo  = None             # captured at show time for restore
         self._detector     = None
         self._session      = None
         self._deaths       = None
@@ -134,6 +163,10 @@ class App:
         self._rage_label   = "Rage Index"
         self._api          = None   # QuestLogClient when logged in
         self._ql_sync      = None   # QuestLogSync when a run is connected
+        self._local_run    = None   # LocalRunData for non-synced runs
+        self._local_life_start = None  # timestamp of current life start (local runs)
+        self._prev_session_deaths = 0  # for new-session detection
+        self._build_poller = None   # BuildSyncPoller — only when logged in
         self._timer        = QTimer()
         self._timer.timeout.connect(self._tick)
 
@@ -148,6 +181,14 @@ class App:
         # Bridge for cloud builds → build planner main thread
         self._cloud_builds_bridge = _CloudBuildsReady()
         self._cloud_builds_bridge.ready.connect(self._build_planner.receive_cloud_builds)
+
+        # Bridge for build poller updates → main thread
+        self._build_poll_bridge = _BuildPollReady()
+        self._build_poll_bridge.updated.connect(self._build_planner.receive_cloud_builds)
+
+        # Bridge for run poller updates → main thread
+        self._run_poll_bridge = _RunPollReady()
+        self._run_poll_bridge.updated.connect(self._selector_win._widget.set_server_runs)
 
     def start(self):
         self._selector_win.show()
@@ -181,16 +222,38 @@ class App:
         # ── Start QuestLog sync only if this run has a matching server token ────
         if self._ql_sync:
             self._ql_sync.stop()
-        self._ql_sync = None
+        self._ql_sync  = None
+        self._local_run = None
         run_token = meta.get("questlog_token", "")
         if run_token and run_token != "__local__" and self._api and self._api._api_key:
             from core.questlog_sync import QuestLogSync
             self._ql_sync = QuestLogSync(
                 run_token, self._api._api_key,
                 on_server_sync=lambda d: self._sync_bridge.synced.emit(d),
+                game_id=meta.get("game_id"),
             )
             self._ql_sync.start()
             log.info("QuestLog sync started token=%s", run_token[:12])
+        else:
+            # Local run — set up local items + death log
+            import time as _time
+            from core.local_run_data import LocalRunData
+            self._local_run = LocalRunData(run_dir)
+            self._local_life_start = _time.time()
+            build_path = meta.get("build_path", "")
+            if build_path and not self._local_run._items:
+                from core.run import _safe_build_path
+                safe_bp = _safe_build_path(build_path)
+                if safe_bp:
+                    import json as _json
+                    try:
+                        with open(safe_bp) as _f:
+                            _build = _json.load(_f)
+                        self._local_run.seed_from_build(_build)
+                    except Exception:
+                        log.warning("Could not load build for item seeding: %r", build_path)
+                else:
+                    log.warning("build_path outside allowed dir — skipping seed: %r", build_path)
 
         # ── Event callbacks ───────────────────────────────────────────────────
         def on_death():
@@ -201,7 +264,22 @@ class App:
             log.info("DEATH  session=%d  total=%d  rage=%d%%  %s  boss=%r",
                      s.session_deaths, s.total_deaths, pct, state, boss)
             if self._ql_sync:
-                self._ql_sync.on_death(boss)
+                ses_d = s.session_deaths
+                tot_d = s.total_deaths
+                def _on_death_resp(resp):
+                    if self._tracker:
+                        life_sec = resp.get("life_duration", 0)
+                        self._tracker.death_log_tab.append_death(boss, life_sec, ses_d, tot_d)
+                self._ql_sync.on_death(boss, on_death_response=_on_death_resp)
+            elif self._local_run:
+                import time as _time
+                now = _time.time()
+                life_sec = int(now - self._local_life_start) if self._local_life_start else 0
+                self._local_life_start = now   # reset life clock for next life
+                self._local_run.append_death(boss, life_sec, s.session_deaths, s.total_deaths)
+                if self._tracker:
+                    self._tracker.death_log_tab.append_death(
+                        boss, life_sec, s.session_deaths, s.total_deaths)
 
         def on_subtract():
             self._deaths.subtract_death()
@@ -209,6 +287,14 @@ class App:
                      self._session.session_deaths, self._session.total_deaths)
             if self._ql_sync:
                 self._ql_sync.on_subtract()
+            elif self._local_run:
+                self._local_run.undo_last_death()
+                if self._tracker:
+                    # Reload from disk so UI matches persisted state
+                    recent = self._local_run.get_recent_deaths()
+                    s2 = self._session
+                    self._tracker.death_log_tab.load_from_status(
+                        recent, s2.session_deaths, s2.total_deaths)
 
         def on_reset():
             self._session.reset_total_deaths()
@@ -216,6 +302,13 @@ class App:
             log.info("RESET ALL DEATHS")
             if self._ql_sync:
                 self._ql_sync.on_reset()
+            elif self._local_run:
+                import time as _time
+                self._local_run._deaths = []
+                self._local_run._save_deaths()
+                self._local_life_start = _time.time()
+                if self._tracker:
+                    self._tracker.death_log_tab.load_from_status([], 0, 0)
 
         def on_kill(tier=None):
             from games.registry import ENEMY
@@ -253,7 +346,7 @@ class App:
         )
         self._detector.start()
 
-        log.info("=== Mortality Tracker — %s  [%s / %s] ===", meta["name"], game_id, mode_id)
+        log.info("=== Elden Ring Tracker — %s  [%s / %s] ===", meta["name"], game_id, mode_id)
 
         # ── Tracker window ────────────────────────────────────────────────────
         tracker = self._tracker
@@ -273,14 +366,33 @@ class App:
             on_boss_mark=on_boss_mark if self._ql_sync else None,
             ql_sync=self._ql_sync,
         )
+        if self._local_run:
+            self._tracker.items_tab.set_local_run(self._local_run)
+            self._tracker.death_log_tab.set_active(True)
+            # Pre-populate items if any exist
+            items, collected, total = self._local_run.get_items()
+            if items:
+                self._tracker.items_tab.refresh(items, collected, total)
+
         self._tracker.switch_run.connect(self._go_to_selector)
         self._tracker.settings_tab.hotkeys_changed.connect(self._detector.update_hotkeys)
         self._tracker.settings_tab.login_requested.connect(self._do_login)
         self._tracker.settings_tab.logout_requested.connect(self._do_logout)
         self._tracker.settings_tab.login_succeeded.connect(self._on_login_succeeded)
         self._tracker.settings_tab.reset_stats.connect(self._on_reset_stats)
-        self._tracker.show()
+        # Hide selector first to avoid ghost flash, then show tracker in its place
+        sel_was_max = self._selector_win.isMaximized()
+        sel_geo     = self._selector_win.geometry()
         self._selector_win.hide()
+        if sel_was_max:
+            self._tracker_was_maximized = True
+            self._tracker_geo = sel_geo   # keep screen position even when maximized
+            self._tracker.showMaximized()
+        else:
+            self._tracker_was_maximized = False
+            self._tracker_geo = sel_geo
+            self._tracker.setGeometry(sel_geo)
+            self._tracker.show()
 
         self._timer.start(TICK_MS)
 
@@ -294,21 +406,56 @@ class App:
             self._bosses     = None
             tracker = self._tracker
             self._tracker = None
+            was_maximized = self._tracker_was_maximized
+            saved_geo     = self._tracker_geo
+            self._tracker_was_maximized = False
+            self._tracker_geo = None
             if tracker:
-                tracker.close()
+                tracker.hide()
                 tracker.deleteLater()
+            if was_maximized:
+                if saved_geo:
+                    self._selector_win.setGeometry(
+                        saved_geo.x(), saved_geo.y(),
+                        max(saved_geo.width(), self._selector_win.minimumWidth()),
+                        max(saved_geo.height(), self._selector_win.minimumHeight()),
+                    )
+                self._selector_win.showMaximized()
+            else:
+                if saved_geo:
+                    self._selector_win.setGeometry(_clamped_geo_from(saved_geo, self._selector_win))
+                self._selector_win.show()
             self._selector_win._widget._populate_runs()
-            self._selector_win.show()
+
 
     def _go_to_selector(self):
         self._stop_active()
         tracker = self._tracker
         self._tracker = None
+        was_maximized = self._tracker_was_maximized
+        saved_geo     = self._tracker_geo
+        self._tracker_was_maximized = False
+        self._tracker_geo = None
         if tracker:
-            tracker.close()
+            tracker.hide()
             tracker.deleteLater()
+        if was_maximized:
+            # Restore to the correct screen before maximizing — hidden windows lose
+            # screen context and showMaximized() alone defaults to primary monitor.
+            # Setting geometry to saved_geo first puts the window on the right screen
+            # with a valid restore size, then showMaximized() maximizes it there.
+            if saved_geo:
+                self._selector_win.setGeometry(
+                    saved_geo.x(), saved_geo.y(),
+                    max(saved_geo.width(), self._selector_win.minimumWidth()),
+                    max(saved_geo.height(), self._selector_win.minimumHeight()),
+                )
+            self._selector_win.showMaximized()
+        else:
+            if saved_geo:
+                self._selector_win.setGeometry(_clamped_geo_from(saved_geo, self._selector_win))
+            self._selector_win.show()
         self._selector_win._widget._populate_runs()
-        self._selector_win.show()
 
     def _stop_active(self):
         self._timer.stop()
@@ -318,6 +465,8 @@ class App:
             except Exception:
                 pass
             self._ql_sync = None
+        self._local_run        = None
+        self._local_life_start = None
         if self._detector:
             self._detector.stop()
             self._detector = None
@@ -339,18 +488,53 @@ class App:
         from core.run import create_run
         game = build.get("game", "elden_ring")
         name = build.get("name", "Unnamed Build").strip() or "Unnamed Build"
-        # Map game → game_id / mode_id that the tracker understands
         if game == "err":
             game_id, mode_id = "elden_ring", "reforged"
         else:
             game_id, mode_id = "elden_ring", "vanilla"
 
+        # Create the local run stub immediately — never block the UI thread.
+        # If the user is logged in, create_session fires on a background thread
+        # and patches the token into the run meta when it comes back.
         slug = create_run(name, game_id, mode_id)
         self._selector_win._widget._populate_runs()
-        # Switch to Runs tab and launch
         self._selector_win._tabs.setCurrentIndex(0)
         self._launch_run(slug)
         log.info("Started run '%s' from build '%s'", slug, name)
+
+        if self._api and getattr(self._api, "_api_key", None):
+            from core.local_run_data import items_from_build
+            from core.run import get_run_dir
+            import json as _json
+
+            api       = self._api
+            items     = items_from_build(build)
+            run_meta_path = os.path.join(get_run_dir(slug), "meta.json")
+
+            def _create_ql():
+                try:
+                    resp = api.create_session(
+                        game=game, game_mode=mode_id,
+                        build_name=name, items=items,
+                    )
+                    token = resp.get("token") if resp.get("ok") else None
+                    if not token:
+                        log.warning("create_session returned no token: %s", resp)
+                        return
+                    # Patch token into the run meta file on disk
+                    try:
+                        with open(run_meta_path) as f:
+                            meta = _json.load(f)
+                        meta["questlog_token"] = token
+                        with open(run_meta_path, "w") as f:
+                            _json.dump(meta, f, indent=2)
+                        log.info("QL token patched into run '%s' token=%s", slug, token[:12])
+                    except Exception as e:
+                        log.warning("Could not patch QL token into meta: %s", e)
+                except Exception as exc:
+                    log.warning("create_session failed: %s", exc)
+
+            threading.Thread(target=_create_ql, daemon=True).start()
 
     # ── Tick ─────────────────────────────────────────────────────────────────
 
@@ -368,6 +552,7 @@ class App:
                     session=self._session,
                     deaths=self._deaths,
                     ql_sync=self._ql_sync,
+                    local_run=self._local_run,
                 )
         except Exception:
             log.exception("Error in tick loop")
@@ -412,13 +597,14 @@ class App:
         self._selector_win._widget.set_server_runs(active_runs, run_history)
         self._build_planner.set_api_key(api_key)
         self._selector_win._tournament_widget.set_api_key(api_key)
+        self._start_build_poller(api_key)
 
         if self._tracker:
             self._tracker.settings_tab.login_succeeded.emit(api_key, username, active_runs)
         else:
             self._on_login_succeeded(api_key, username, active_runs)
 
-        log.info("Login OK — %s, active=%d history=%d", username, len(active_runs), len(run_history))
+        log.info("Login OK — %r, active=%d history=%d", username, len(active_runs), len(run_history))
 
     def _on_login_error(self, msg):
         """Runs on main thread via signal."""
@@ -461,7 +647,7 @@ class App:
             s = _load_settings()
             s["session_token"] = token
             _save_settings(s)
-        log.info("Logged in as %s (token=%s) — cloud sync active", username, token[:8] if token else "none")
+        log.info("Logged in as %r (token=%s) — cloud sync active", username, token[:8] if token else "none")
 
     def _on_server_run_connect(self, server_run):
         """
@@ -520,7 +706,7 @@ class App:
         token    = saved.get("session_token", "")
         if not api_key or not username:
             return
-        log.info("Auto-restoring session for %s (token=%s)", username, token[:8] if token else "none")
+        log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
         self._selector_win._widget.set_logged_in(username)
         self._build_planner.set_api_key(api_key)
@@ -598,7 +784,7 @@ class App:
         """Reset all deaths + timers in app and on QuestLog."""
         if self._session:
             self._session.reset_total_deaths()
-            self._session.reset_session_time()   # restart elapsed clock from now
+            self._session.reset_session_time()   # waits for EXE if game not running
         if self._deaths:
             self._deaths.reset()
         if self._ql_sync:
@@ -619,18 +805,39 @@ class App:
         if data.get("reset"):
             self._session.reset_total_deaths()
             self._deaths.reset()
+            self._prev_session_deaths = 0
             log.info("Reset synced from web")
         else:
-            # Deaths diverged (e.g. undo from web) — patch session count directly
-            server_deaths = data.get("deaths", 0)
-            diff = server_deaths - self._session.session_deaths
-            if diff > 0:
-                for _ in range(diff):
-                    self._deaths.record_death()
-            elif diff < 0:
-                for _ in range(abs(diff)):
-                    self._deaths.subtract_death()
-            log.info("Death count synced from web: local→%d", server_deaths)
+            server_session_deaths = data.get("session_deaths", -1)
+
+            # New sitting detected — server reset session after grace period
+            if server_session_deaths == 0 and self._prev_session_deaths > 0:
+                self._session.reset_session_time()
+                self._session.session_deaths = 0
+                self._deaths.on_new_session_detected()
+                log.info("New session detected via server sync — timer and session deaths reset")
+
+            if server_session_deaths >= 0:
+                self._prev_session_deaths = server_session_deaths
+
+            # Sync session deaths from server's session_deaths field
+            # Use total deaths (deaths) only to update the total counter
+            server_total   = data.get("deaths", 0)
+            sess_deaths    = data.get("session_deaths", server_session_deaths)
+            if sess_deaths >= 0:
+                sess_diff = sess_deaths - self._session.session_deaths
+                if sess_diff > 0:
+                    for _ in range(sess_diff):
+                        self._deaths.record_death()
+                elif sess_diff < 0:
+                    for _ in range(abs(sess_diff)):
+                        self._deaths.subtract_death()
+            # Sync total deaths directly without going through record_death loop
+            if server_total >= 0:
+                self._session.total_deaths = server_total
+                self._session.save()
+            log.info("Death count synced from web: session=%d total=%d",
+                     self._session.session_deaths, self._session.total_deaths)
 
     def _apply_rage_update(self, rage_pct, rage_name):
         """Main-thread handler: apply rage values returned by server after boss kill."""
@@ -638,10 +845,41 @@ class App:
             self._deaths._rage_pct = float(rage_pct)
             self._deaths._consecutive = int(rage_pct / 25)
 
+    def _start_build_poller(self, api_key: str):
+        if self._build_poller:
+            self._build_poller.stop()
+        from core.build_sync_poller import BuildSyncPoller
+        build_bridge = self._build_poll_bridge
+        run_bridge   = self._run_poll_bridge
+
+        def _on_builds(builds, added, removed, updated):
+            build_bridge.updated.emit(builds)
+
+        def _on_runs(active_runs, run_history):
+            run_bridge.updated.emit(active_runs, run_history)
+
+        def _active_token():
+            return self._ql_sync.token if self._ql_sync else None
+
+        self._build_poller = BuildSyncPoller(
+            api_key,
+            on_builds_updated=_on_builds,
+            on_runs_updated=_on_runs,
+            active_token_fn=_active_token,
+        )
+        self._build_poller.start()
+
+    def _on_cloud_build_changed(self):
+        if self._build_poller:
+            self._build_poller.force_refresh()
+
     def _do_logout(self):
         self._api = None
         if self._tracker:
             self._tracker._api = None
+        if self._build_poller:
+            self._build_poller.stop()
+            self._build_poller = None
         log.info("Logged out — running offline")
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
@@ -649,6 +887,9 @@ class App:
     def _shutdown(self):
         log.info("Shutting down.")
         self._stop_active()
+        if self._build_poller:
+            self._build_poller.stop()
+            self._build_poller = None
         tracker = self._tracker
         self._tracker = None
         if tracker:

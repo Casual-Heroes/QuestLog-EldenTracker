@@ -11,6 +11,15 @@ DEFAULT_HOTKEYS = {
     "reset":    "f8",
 }
 
+_VALID_HOTKEY_RE = __import__("re").compile(r"^[a-z0-9 +\-]+$", __import__("re").IGNORECASE)
+
+def _validate_hotkey(key: str) -> str:
+    """Return key unchanged if it looks safe, else fall back to empty string."""
+    if key and _VALID_HOTKEY_RE.match(key):
+        return key
+    log.warning("Ignoring suspicious hotkey value: %r", key)
+    return ""
+
 
 class Detector:
     def __init__(self, death_tracker, on_death=None, on_subtract=None, on_reset=None, hotkeys=None):
@@ -21,6 +30,7 @@ class Detector:
         self._hotkeys          = {**DEFAULT_HOTKEYS, **(hotkeys or {})}
         self._running          = False
         self._reset_hold_start = None
+        self._reset_lock       = threading.Lock()
 
     def update_hotkeys(self, hotkeys):
         """Re-register hotkeys without restarting the detector."""
@@ -45,19 +55,28 @@ class Detector:
         self._unhook()
 
     def _hook(self):
+        self._hooks = []
         try:
-            keyboard.on_press_key(self._hotkeys["death"],    lambda _: self._on_death(),    suppress=False)
-            keyboard.on_press_key(self._hotkeys["subtract"], lambda _: self._on_subtract(), suppress=False)
-            keyboard.on_press_key(self._hotkeys["reset"],    self._reset_key_down,           suppress=False)
-            keyboard.on_release_key(self._hotkeys["reset"],  self._reset_key_up)
+            hk_death    = _validate_hotkey(self._hotkeys.get("death", ""))
+            hk_subtract = _validate_hotkey(self._hotkeys.get("subtract", ""))
+            hk_reset    = _validate_hotkey(self._hotkeys.get("reset", ""))
+            if hk_death:
+                self._hooks.append(keyboard.on_press_key(hk_death,    lambda _: self._on_death(),    suppress=False))
+            if hk_subtract:
+                self._hooks.append(keyboard.on_press_key(hk_subtract, lambda _: self._on_subtract(), suppress=False))
+            if hk_reset:
+                self._hooks.append(keyboard.on_press_key(hk_reset,    self._reset_key_down,           suppress=False))
+                self._hooks.append(keyboard.on_release_key(hk_reset,  self._reset_key_up))
         except Exception:
             log.exception("Failed to register hotkeys")
 
     def _unhook(self):
-        try:
-            keyboard.unhook_all()
-        except Exception:
-            pass
+        for h in getattr(self, "_hooks", []):
+            try:
+                keyboard.unhook(h)
+            except Exception:
+                pass
+        self._hooks = []
 
     def _on_death(self):
         log.info("Death hotkey (%s)", self._hotkeys["death"].upper())
@@ -68,19 +87,25 @@ class Detector:
         self.on_subtract()
 
     def _reset_key_down(self, event):
-        if self._reset_hold_start is None:
-            self._reset_hold_start = time.time()
-            threading.Thread(target=self._reset_hold_watch, daemon=True).start()
+        with self._reset_lock:
+            if self._reset_hold_start is None:
+                self._reset_hold_start = time.time()
+                threading.Thread(target=self._reset_hold_watch, daemon=True).start()
 
     def _reset_key_up(self, event):
-        self._reset_hold_start = None
+        with self._reset_lock:
+            self._reset_hold_start = None
 
     def _reset_hold_watch(self):
-        start = self._reset_hold_start
-        while self._reset_hold_start is not None:
-            if time.time() - start >= 3.0:
-                self._reset_hold_start = None
-                log.info("Reset hotkey held 3s — resetting")
-                self.on_reset()
-                return
+        with self._reset_lock:
+            start = self._reset_hold_start
+        while True:
+            with self._reset_lock:
+                if self._reset_hold_start is None:
+                    return
+                if time.time() - start >= 3.0:
+                    self._reset_hold_start = None
+                    log.info("Reset hotkey held 3s — resetting")
+                    self.on_reset()
+                    return
             time.sleep(0.05)

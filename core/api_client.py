@@ -3,6 +3,7 @@ QuestLog API client — optional cloud sync.
 All session calls are fire-and-forget (daemon threads). Never blocks the UI or hotkeys.
 """
 
+import secrets
 import threading
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -26,7 +27,9 @@ class QuestLogClient:
         self._api_key       = api_key
         self._session_token = session_token
         self._http          = requests.Session()
+        self._http.verify   = True
         self._http.timeout  = REQUEST_TIMEOUT
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
 
     @property
     def _key_header(self):
@@ -67,12 +70,20 @@ class QuestLogClient:
         """
         import requests
 
-        result = {"code": None}
+        csrf_state = secrets.token_urlsafe(16)
+        result = {"code": None, "state": None}
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 qs = parse_qs(urlparse(self.path).query)
-                result["code"] = qs.get("code", [None])[0]
+                returned_state = qs.get("state", [None])[0]
+                if returned_state != csrf_state:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write("Invalid state — possible CSRF attempt.")
+                    return
+                result["code"]  = qs.get("code", [None])[0]
+                result["state"] = returned_state
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 self.end_headers()
@@ -91,7 +102,7 @@ class QuestLogClient:
         try:
             server = HTTPServer(("localhost", AUTH_PORT), _Handler)
             server.timeout = 120
-            webbrowser.open(f"{BASE_URL}/listener/auth/")
+            webbrowser.open(f"{BASE_URL}/listener/auth/?state={csrf_state}")
             server.handle_request()
             server.server_close()
         except Exception as e:
@@ -102,8 +113,11 @@ class QuestLogClient:
             on_error("Login cancelled or timed out.")
             return
 
+        _session = requests.Session()
+        _session.verify = True
+        _session.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
         try:
-            r = requests.get(
+            r = _session.get(
                 f"{BASE_URL}/api/listener/auth/exchange/",
                 params={"code": result["code"]},
                 timeout=10,
@@ -121,7 +135,7 @@ class QuestLogClient:
         username = data.get("username", "")
 
         try:
-            profile_r = requests.get(
+            profile_r = _session.get(
                 f"{BASE_URL}/api/soulslike/desktop/profile/",
                 headers={"X-Listener-Key": api_key},
                 timeout=10,
@@ -152,17 +166,34 @@ class QuestLogClient:
             log.warning("get_profile failed: %s", e)
             return {}
 
-    def create_session(self, game, game_mode, build_name=""):
+    def create_session(self, game, game_mode, build_name="", items=None):
         """
         Start a new run session on the server.
         Returns {'ok': True, 'token': '...', 'manage_url': '...'} or {}.
         Blocking — call from thread.
+
+        items — list of {"name": str, "type": str} dicts seeded from the build.
         """
+        payload = {
+            "game":        game,
+            "game_mode":   game_mode,
+            "build_name":  build_name,
+            "timing_mode": "listener",
+        }
+        if items:
+            payload["items"] = [
+                {
+                    "item_type": it["type"],
+                    "item_id":   it.get("id") or 0,
+                    "item_name": it["name"],
+                }
+                for it in items
+                if it.get("name") and it.get("type")
+            ]
         try:
             r = self._http.post(
                 f"{BASE_URL}/api/soulslike/desktop/session/create/",
-                json={"game": game, "game_mode": game_mode,
-                      "build_name": build_name, "timing_mode": "listener"},
+                json=payload,
                 headers=self._key_header,
                 timeout=10,
             )

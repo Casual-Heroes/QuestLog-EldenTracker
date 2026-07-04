@@ -15,7 +15,7 @@ from core.crash_logger import get_logger
 log = get_logger("questlog.builder")
 
 BASE_URL     = "https://questlog.casual-heroes.com"
-CACHE_TTL_H  = 24    # hours before re-fetching from server
+CACHE_TTL_H  = 6     # hours before re-fetching from server
 CACHE_DIR    = _data_path("builder_cache")
 
 
@@ -46,6 +46,7 @@ class BuilderData:
         # ERR only
         self.affinities  = []
         self.curios      = []
+        self.fortunes    = []         # list of fortune objects from API
         self.runeforging = {}
         self.err_curves  = {}         # {vigor_hp: [...], mind_fp: [...], ...}
 
@@ -257,6 +258,14 @@ def load_builder_data(game, api_key=None, on_progress=None):
 
         resp = _get(url("/api/soulslike/err/curios/"), game, "curios", api_key)
         d.curios = resp.get('curios', [])
+
+        resp = _get(url("/api/soulslike/err/fortunes/"), game, "fortunes", api_key)
+        # Sort: basic → common → rare → legendary
+        _order = {"basic": 0, "common": 1, "rare": 2, "legendary": 3}
+        d.fortunes = sorted(
+            resp.get('fortunes', []),
+            key=lambda f: (_order.get(f.get('fortune_type', 'common'), 1), f.get('name', ''))
+        )
 
         resp = _get(url("/api/soulslike/err/runeforging/"), game, "runeforging", api_key)
         d.runeforging = resp

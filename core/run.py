@@ -4,14 +4,35 @@ import re
 import time
 
 from core.paths import data as _data_path
-RUNS_DIR = _data_path("runs")
+RUNS_DIR  = _data_path("runs")
+SAVES_DIR = _data_path("builds")  # expected parent for all build_path values
 
+
+def _safe_build_path(build_path: str) -> str | None:
+    """Return realpath of build_path only if it lives inside SAVES_DIR, else None."""
+    if not build_path:
+        return None
+    real = os.path.realpath(build_path)
+    allowed = os.path.realpath(SAVES_DIR)
+    if real.startswith(allowed + os.sep) or real == allowed:
+        return real
+    return None
+
+
+_WIN_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *[f"com{i}" for i in range(1, 10)],
+    *[f"lpt{i}" for i in range(1, 10)],
+}
 
 def _slug(name):
     s = name.lower().strip()
     s = re.sub(r"[^\w\s-]", "", s)
     s = re.sub(r"[\s_]+", "-", s)
-    return s[:48]
+    s = s[:48]
+    if s in _WIN_RESERVED:
+        s = f"run-{s}"
+    return s or "run"
 
 
 def list_runs():
@@ -31,7 +52,7 @@ def list_runs():
     return runs
 
 
-def create_run(name, game_id, mode_id, questlog_token=None):
+def create_run(name, game_id, mode_id, questlog_token=None, build_path=None):
     """Create a new run directory and meta.json. Returns the run slug."""
     base = _slug(name)
     slug = base
@@ -52,6 +73,13 @@ def create_run(name, game_id, mode_id, questlog_token=None):
     }
     if questlog_token:
         meta["questlog_token"] = questlog_token
+    if build_path:
+        safe = _safe_build_path(build_path)
+        if safe:
+            meta["build_path"] = safe
+        else:
+            from core.crash_logger import get_logger as _gl
+            _gl("questlog.run").warning("build_path outside allowed dir — not stored: %r", build_path)
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 

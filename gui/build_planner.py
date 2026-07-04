@@ -8,11 +8,17 @@ Picker: modal-style panel that slides in over center/right for item selection.
 import json
 import os
 import threading
+import requests as _requests
+
+# Shared session so all build API calls reuse the same connection + UA
+_http = _requests.Session()
+_http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0"})
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QLineEdit, QComboBox, QFrame, QSizePolicy,
     QStackedWidget, QSlider, QSpinBox, QGridLayout, QButtonGroup,
     QAbstractButton, QSplitter, QToolButton, QLayout, QWidgetItem,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QRect, QSize, QPoint, QEvent
 from PyQt6.QtGui import QFont, QColor
@@ -109,6 +115,8 @@ def _empty_build(game="elden_ring"):
         "tears":        [None, None],
         "curioSelections": {},
         "runeInventory":   [],
+        "fortune_name":       None,   # ERR only
+        "minor_fortune_name": None,   # ERR only
     }
 
 
@@ -180,6 +188,11 @@ QPushButton#primary {{
     color: {ACCENT_GOLD};
 }}
 QPushButton#primary:hover {{ background: rgba(201,168,76,0.22); }}
+QPushButton#ql-save {{
+    background: rgba(201,168,76,0.15); border: 2px solid {ACCENT_GOLD2};
+    color: {ACCENT_GOLD2}; font-weight: 700;
+}}
+QPushButton#ql-save:hover {{ background: rgba(232,196,90,0.28); border-color: {ACCENT_GOLD2}; }}
 QPushButton#danger:hover {{
     border-color: {ACCENT_RED2}; color: {ACCENT_RED2};
     background: rgba(192,57,15,0.08);
@@ -318,7 +331,9 @@ class StatRow(QWidget):
         super().__init__(parent)
         self.key = key
         self._caps = {}
-        self._rune_bonus = 0
+        self._rune_bonus    = 0
+        self._fortune_bonus = 0
+        self._raw_base      = 10
         self.setFixedHeight(52)
 
         root = QVBoxLayout(self)
@@ -364,6 +379,12 @@ class StatRow(QWidget):
         self._plus.setFixedSize(26, 26)
         self._plus.setStyleSheet(btn_style)
 
+        self._fortune_lbl = QLabel("")
+        self._fortune_lbl.setFixedWidth(32)
+        self._fortune_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 10px; font-weight: 700; background: transparent;")
+        self._fortune_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._fortune_lbl.setVisible(False)
+
         self._badge = QLabel("")
         self._badge.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent;")
 
@@ -371,6 +392,7 @@ class StatRow(QWidget):
         top.addWidget(self._minus)
         top.addWidget(self._spin)
         top.addWidget(self._plus)
+        top.addWidget(self._fortune_lbl)
         top.addStretch()
         top.addWidget(self._badge)
         root.addLayout(top)
@@ -393,20 +415,36 @@ class StatRow(QWidget):
         self._spin.editingFinished.connect(self._on_editing_finished)
 
     def _decrement(self):
-        new = max(self._min_val, self._spin.value() - 1)
-        self._spin.setValue(new)
+        new = max(self._min_val, self._raw_base - 1)
+        self._raw_base = new
+        self._spin.blockSignals(True)
+        self._spin.setValue(min(99, new + self._fortune_bonus))
+        self._spin.blockSignals(False)
+        self._refresh_bar()
+        self.value_changed.emit(self.key, new)
 
     def _increment(self):
-        new = min(99, self._spin.value() + 1)
-        self._spin.setValue(new)
+        new = min(99, self._raw_base + 1)
+        self._raw_base = new
+        self._spin.blockSignals(True)
+        self._spin.setValue(min(99, new + self._fortune_bonus))
+        self._spin.blockSignals(False)
+        self._refresh_bar()
+        self.value_changed.emit(self.key, new)
 
     def _on_changed(self, val):
+        # Only fires when user types directly (buttons are handled above)
+        # Treat displayed value as raw base when no fortune is active
+        if self._fortune_bonus == 0:
+            self._raw_base = val
         self._refresh_bar()
-        self.value_changed.emit(self.key, val)
+        self.value_changed.emit(self.key, self._raw_base)
 
     def _on_editing_finished(self):
-        # Clamp typed value to [min_val, 99] when user leaves the field
+        if self._fortune_bonus != 0:
+            return   # spinbox shows effective value; ignore direct edits while fortune active
         clamped = max(self._min_val, min(99, self._spin.value()))
+        self._raw_base = clamped
         if clamped != self._spin.value():
             self._spin.blockSignals(True)
             self._spin.setValue(clamped)
@@ -420,14 +458,16 @@ class StatRow(QWidget):
 
     def set_value(self, val, min_val=1):
         self._min_val = max(1, min_val)
+        self._raw_base = max(self._min_val, min(99, val))
+        display = min(99, self._raw_base + self._fortune_bonus)
         self._spin.blockSignals(True)
         self._spin.setRange(self._min_val, 99)
-        self._spin.setValue(max(self._min_val, min(99, val)))
+        self._spin.setValue(display)
         self._spin.blockSignals(False)
         self._refresh_bar()
 
     def get_value(self):
-        return self._spin.value()
+        return self._raw_base
 
     def set_caps(self, caps):
         self._caps = caps or {}
@@ -435,11 +475,23 @@ class StatRow(QWidget):
 
     def set_rune_bonus(self, bonus):
         self._rune_bonus = bonus
+        display = min(99, self._raw_base + self._fortune_bonus + bonus)
+        self._spin.blockSignals(True)
+        self._spin.setValue(display)
+        self._spin.blockSignals(False)
+        self._refresh_bar()
+
+    def set_fortune_bonus(self, bonus: int):
+        self._fortune_bonus = bonus
+        display = min(99, self._raw_base + bonus + self._rune_bonus)
+        self._spin.blockSignals(True)
+        self._spin.setValue(display)
+        self._spin.blockSignals(False)
+        self._fortune_lbl.setVisible(False)
         self._refresh_bar()
 
     def _refresh_bar(self):
-        base = self._spin.value()
-        effective = min(99, base + self._rune_bonus)
+        effective = min(99, self._raw_base + self._fortune_bonus + self._rune_bonus)
 
         track_w = max(1, self._bar_track.width() or 160)
         fill_w = max(2, int(effective / 99 * track_w))
@@ -575,6 +627,21 @@ class SlotButton(QWidget):
         pass
 
 
+def _weapon_skill_locked(weapon: dict) -> bool:
+    """Return True if weapon has a fixed/locked skill (no AoW picker, no affinity).
+    Locked = is_locked_skill:true OR is_infusable:false (non-infusable = no AoW swapping).
+    """
+    if not weapon:
+        return False
+    return weapon.get("is_locked_skill", False) or not weapon.get("is_infusable", True)
+
+
+def _weapon_skill_name(weapon: dict) -> str:
+    """Return the weapon's built-in skill name for display."""
+    return (weapon.get("default_skill") or weapon.get("special") or
+            weapon.get("special_ability") or "")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Ash of War sub-row (shown below each weapon SlotButton)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,17 +693,36 @@ class AoWRow(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        if self.cursor().shape() == Qt.CursorShape.ArrowCursor:
+            return   # somber weapon — no picker
         child = self.childAt(event.pos())
         if child is None or not isinstance(child, QToolButton):
             self.pick_requested.emit(self.slot_key)
 
     def set_weapon(self, weapon):
-        """Show/hide row based on whether a weapon is equipped (and not locked skill)."""
-        if weapon and not weapon.get("is_locked_skill", False):
-            self.setVisible(True)
-        else:
+        """Show AoW/skill row for all equipped weapons.
+        Locked-skill weapons show their built-in skill read-only.
+        Infusable weapons show the user-picked AoW (clickable picker).
+        """
+        if not weapon:
             self.setVisible(False)
             self._aow = None
+            return
+        self.setVisible(True)
+        if _weapon_skill_locked(weapon):
+            # Locked skill — show built-in skill name as read-only
+            skill = _weapon_skill_name(weapon) or "—"
+            self._aow_lbl.setText(skill)
+            self._aow_lbl.setStyleSheet(
+                f"color: {TEXT_MUTED}; font-size: 10px; font-style: normal; background: transparent;"
+            )
+            self._clear_btn.setVisible(False)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._aow = None
+        else:
+            # Infusable — restore interactive picker state
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            # set_aow() called separately to populate chosen AoW
 
     def set_aow(self, aow):
         self._aow = aow
@@ -1258,10 +1344,10 @@ class ARPanel(QWidget):
         fp.addSpacing(8)
 
         # AoW row — clickable, shows current ash of war
-        aow_row_w = QWidget()
-        aow_row_w.setCursor(Qt.CursorShape.PointingHandCursor)
-        aow_row_w.setObjectName("ARPanelAoW")
-        aow_row_w.setStyleSheet(f"""
+        self._aow_row_w = QWidget()
+        self._aow_row_w.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._aow_row_w.setObjectName("ARPanelAoW")
+        self._aow_row_w.setStyleSheet(f"""
             QWidget#ARPanelAoW {{
                 background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
                 border-radius: 6px;
@@ -1270,26 +1356,28 @@ class ARPanel(QWidget):
                 border-color: {ACCENT_GOLD}; background: rgba(201,168,76,0.06);
             }}
         """)
-        aow_row_l = QHBoxLayout(aow_row_w)
+        aow_row_l = QHBoxLayout(self._aow_row_w)
         aow_row_l.setContentsMargins(12, 6, 12, 6)
         aow_row_l.setSpacing(8)
-        aow_cap = QLabel("ASH OF WAR")
+        aow_cap = QLabel("SKILL")
         aow_cap.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; background: transparent;")
         aow_row_l.addWidget(aow_cap)
         self._aow_lbl = QLabel("None")
         self._aow_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; background: transparent;")
         aow_row_l.addWidget(self._aow_lbl, 1)
-        aow_change = QLabel("change")
-        aow_change.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
-        aow_row_l.addWidget(aow_change)
+        self._aow_change_lbl = QLabel("change")
+        self._aow_change_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
+        aow_row_l.addWidget(self._aow_change_lbl)
 
         def _aow_clicked(event):
             if event.button() == Qt.MouseButton.LeftButton:
+                if self._aow_row_w.cursor().shape() == Qt.CursorShape.ArrowCursor:
+                    return   # locked skill — no picker
                 slot = self._slot_combo.currentData() or "rh1"
                 self.aow_pick_requested.emit(slot)
-        aow_row_w.mousePressEvent = _aow_clicked
+        self._aow_row_w.mousePressEvent = _aow_clicked
 
-        fp.addWidget(aow_row_w)
+        fp.addWidget(self._aow_row_w)
         fp.addSpacing(12)
 
         # Total AR hero block
@@ -1414,7 +1502,34 @@ class ARPanel(QWidget):
         self._weapon_lbl.setText(weapon.get("name", ""))
         self._stack.setCurrentIndex(1)
 
-        if affinities:
+        # Lock/unlock AoW row based on whether weapon has a fixed skill
+        locked = _weapon_skill_locked(weapon)
+        if locked:
+            skill = _weapon_skill_name(weapon) or "None"
+            self._aow_lbl.setText(skill)
+            self._aow_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; background: transparent;")
+            self._aow_change_lbl.setVisible(False)
+            self._aow_row_w.setCursor(Qt.CursorShape.ArrowCursor)
+            self._aow_row_w.setStyleSheet(f"""
+                QWidget#ARPanelAoW {{
+                    background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                    border-radius: 6px;
+                }}
+            """)
+        else:
+            self._aow_change_lbl.setVisible(True)
+            self._aow_row_w.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._aow_row_w.setStyleSheet(f"""
+                QWidget#ARPanelAoW {{
+                    background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                    border-radius: 6px;
+                }}
+                QWidget#ARPanelAoW:hover {{
+                    border-color: {ACCENT_GOLD}; background: rgba(201,168,76,0.06);
+                }}
+            """)
+
+        if affinities and not locked:
             self._affinity_combo.blockSignals(True)
             self._affinity_combo.clear()
             for a in affinities:
@@ -1532,12 +1647,22 @@ class BuildListPanel(QWidget):
         col.setSpacing(1)
         name_lbl = QLabel(build.get("name", "Build"))
         name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 600; background: transparent;")
-        game = build.get("game", "elden_ring").replace("_", " ").title()
+        game = (build.get("game") or "elden_ring").replace("_", " ").title()
         lvl  = build.get("level", "?")
         sub  = _muted(f"{game}  ·  Lv {lvl}", 9)
         col.addWidget(name_lbl)
         col.addWidget(sub)
         cl.addLayout(col, 1)
+
+        is_synced = bool(build.get("cloud_id"))
+        sync_badge = QLabel("QL" if is_synced else "LOCAL")
+        sync_badge.setStyleSheet(
+            f"font-size: 8px; font-weight: 700; letter-spacing: 1px; border-radius: 3px; padding: 1px 4px; background: transparent;"
+            + (f"color: {ACCENT_GOLD}; border: 1px solid {ACCENT_GOLD};" if is_synced
+               else f"color: {TEXT_DIM}; border: 1px solid {TEXT_DIM};")
+        )
+        sync_badge.setToolTip("Synced to QuestLog" if is_synced else "Saved locally only")
+        cl.addWidget(sync_badge)
 
         del_btn = QToolButton()
         del_btn.setText("×")
@@ -1849,7 +1974,709 @@ class CurioPanel(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ERR Fortune panel
+# ─────────────────────────────────────────────────────────────────────────────
+_FORTUNE_TYPE_COLOR = {
+    "basic":     "#6b7280",
+    "common":    "#8892a4",
+    "rare":      "#6c5ce7",
+    "legendary": "#c9a84c",
+}
+
+
+def _fortune_tooltip(fortune: dict) -> str:
+    parts = []
+    for b in fortune.get("buffs", []):
+        parts.append(f"+ {b}")
+    for d in fortune.get("drawbacks", []):
+        parts.append(f"- {d}")
+    unique = fortune.get("unique_effects", "")
+    if unique and unique.lower() not in ("none", "no unique mechanic", "no unique mechanic."):
+        parts.append(f"\n{unique}")
+    return "\n".join(parts)
+
+
+class FortunePanel(QWidget):
+    """
+    Compact fortune picker — uses all available space.
+    Fortunes displayed as two dense columns of rows grouped by type.
+    Click a row to select / deselect. Full detail in tooltip.
+    Selected fortune gets a detail strip below it with all buffs/drawbacks.
+    """
+    fortune_changed = pyqtSignal(str)   # fortune_name or "" for none
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fortunes: list  = []
+        self._selected: str | None = None
+        self._rows: dict[str, QWidget] = {}
+        self.setStyleSheet("background: transparent;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Selected-fortune detail strip ─────────────────────────────────────
+        self._detail_strip = QWidget()
+        self._detail_strip.setObjectName("FDetail")
+        self._detail_strip.setStyleSheet(f"""
+            QWidget#FDetail {{
+                background: rgba(201,168,76,0.07);
+                border-bottom: 1px solid rgba(201,168,76,0.25);
+            }}
+        """)
+        dl = QVBoxLayout(self._detail_strip)
+        dl.setContentsMargins(14, 8, 14, 8)
+        dl.setSpacing(2)
+        self._detail_name = QLabel("")
+        self._detail_name.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._detail_name.setStyleSheet(f"color: {ACCENT_GOLD}; background: transparent;")
+        dl.addWidget(self._detail_name)
+        self._detail_lines = QLabel("")
+        self._detail_lines.setWordWrap(True)
+        self._detail_lines.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
+        dl.addWidget(self._detail_lines)
+        self._detail_strip.setVisible(False)
+        root.addWidget(self._detail_strip)
+
+        # ── Scroll area with two-column grid ─────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        self._inner = QWidget()
+        self._inner.setStyleSheet("background: transparent;")
+        self._grid = QGridLayout(self._inner)
+        self._grid.setContentsMargins(4, 4, 4, 4)
+        self._grid.setHorizontalSpacing(4)
+        self._grid.setVerticalSpacing(2)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(1, 1)
+        scroll.setWidget(self._inner)
+        root.addWidget(scroll, 1)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_fortunes(self, fortunes: list, current: str = None):
+        self._fortunes = fortunes
+        self._selected = current
+        self._rebuild()
+        self._refresh_detail()
+
+    def set_selected(self, name: str | None):
+        self._selected = name
+        self._refresh_rows()
+        self._refresh_detail()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _rebuild(self):
+        # Clear grid
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._rows.clear()
+
+        # Group by type, emit a type-header spanning both columns then rows in 2 cols
+        groups: dict[str, list] = {}
+        order = []
+        for f in self._fortunes:
+            t = f.get("fortune_type", "common")
+            if t not in groups:
+                groups[t] = []
+                order.append(t)
+            groups[t].append(f)
+
+        grid_row = 0
+        for ftype in order:
+            # Type header — full width
+            hdr = QLabel(ftype.upper())
+            hdr.setFixedHeight(22)
+            hdr.setStyleSheet(
+                f"color: {_FORTUNE_TYPE_COLOR.get(ftype, TEXT_MUTED)}; "
+                f"font-size: 9px; font-weight: 700; letter-spacing: 2px; "
+                f"background: transparent; padding-left: 4px;"
+            )
+            self._grid.addWidget(hdr, grid_row, 0, 1, 2)
+            grid_row += 1
+
+            # Fortune rows in two columns
+            fortunes = groups[ftype]
+            for i, fortune in enumerate(fortunes):
+                row_w = self._make_row(fortune)
+                self._rows[fortune["name"]] = row_w
+                self._grid.addWidget(row_w, grid_row + i // 2, i % 2)
+            grid_row += (len(fortunes) + 1) // 2
+
+        # Spacer at bottom
+        from PyQt6.QtWidgets import QSpacerItem, QSizePolicy as QSP
+        self._grid.addItem(
+            QSpacerItem(0, 0, QSP.Policy.Minimum, QSP.Policy.Expanding),
+            grid_row, 0, 1, 2
+        )
+
+    def _make_row(self, fortune: dict) -> QWidget:
+        name     = fortune["name"]
+        selected = name == self._selected
+        ftype    = fortune.get("fortune_type", "common")
+        type_col = _FORTUNE_TYPE_COLOR.get(ftype, TEXT_DIM)
+
+        row = QWidget()
+        row.setObjectName("FRow")
+        row.setFixedHeight(28)
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.setToolTip(_fortune_tooltip(fortune))
+        self._style_row(row, selected, type_col)
+
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(8, 0, 8, 0)
+        rl.setSpacing(6)
+
+        # Type accent dot
+        dot = QLabel("●")
+        dot.setFixedWidth(10)
+        dot.setStyleSheet(f"color: {type_col}; font-size: 7px; background: transparent;")
+        rl.addWidget(dot)
+
+        name_lbl = QLabel(name)
+        name_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold if selected else QFont.Weight.Normal))
+        name_lbl.setStyleSheet(
+            f"color: {ACCENT_GOLD if selected else TEXT_PRIMARY}; background: transparent;"
+        )
+        rl.addWidget(name_lbl, 1)
+
+        # Quick buff/drawback indicators
+        buffs    = fortune.get("buffs", [])
+        drawbacks= fortune.get("drawbacks", [])
+        summary  = ""
+        if buffs:
+            summary += f"+{len(buffs)}"
+        if drawbacks:
+            summary += f" -{len(drawbacks)}"
+        if summary.strip():
+            ind = QLabel(summary.strip())
+            ind.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 8px; background: transparent;")
+            rl.addWidget(ind)
+
+        if selected:
+            chk = QLabel("✓")
+            chk.setFixedWidth(14)
+            chk.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 11px; font-weight: 700; background: transparent;")
+            rl.addWidget(chk)
+
+        def _click(_, n=name):
+            if self._selected == n:
+                self._selected = None
+                self.fortune_changed.emit("")
+            else:
+                self._selected = n
+                self.fortune_changed.emit(n)
+            self._refresh_rows()
+            self._refresh_detail()
+
+        row.mousePressEvent = _click
+        return row
+
+    def _style_row(self, row: QWidget, selected: bool, type_col: str):
+        if selected:
+            row.setStyleSheet(f"""
+                QWidget#FRow {{
+                    background: rgba(201,168,76,0.12);
+                    border: 1px solid rgba(201,168,76,0.45);
+                    border-radius: 5px;
+                }}
+            """)
+        else:
+            row.setStyleSheet(f"""
+                QWidget#FRow {{
+                    background: {BG_CARD};
+                    border: 1px solid {BORDER_SOLID};
+                    border-radius: 5px;
+                }}
+                QWidget#FRow:hover {{ background: {BG_CARD_HOV}; }}
+            """)
+
+    def _refresh_rows(self):
+        for name, row_w in self._rows.items():
+            selected = name == self._selected
+            fortune  = next((f for f in self._fortunes if f["name"] == name), {})
+            ftype    = fortune.get("fortune_type", "common")
+            type_col = _FORTUNE_TYPE_COLOR.get(ftype, TEXT_DIM)
+            self._style_row(row_w, selected, type_col)
+            # Update name label color and checkmark
+            rl = row_w.layout()
+            if rl:
+                for i in range(rl.count()):
+                    w = rl.itemAt(i).widget()
+                    if isinstance(w, QLabel) and w.text() not in ("●", "✓") and not w.text().startswith(("+", "-")):
+                        w.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold if selected else QFont.Weight.Normal))
+                        w.setStyleSheet(
+                            f"color: {ACCENT_GOLD if selected else TEXT_PRIMARY}; background: transparent;"
+                        )
+
+    def _refresh_detail(self):
+        if not self._selected:
+            self._detail_strip.setVisible(False)
+            return
+        fortune = next((f for f in self._fortunes if f["name"] == self._selected), None)
+        if not fortune:
+            self._detail_strip.setVisible(False)
+            return
+
+        self._detail_name.setText(self._selected)
+        lines = []
+        for b in fortune.get("buffs", []):
+            lines.append(f"<span style='color:#22c55e'>+ {b}</span>")
+        for d in fortune.get("drawbacks", []):
+            lines.append(f"<span style='color:#ef4444'>- {d}</span>")
+        unique = fortune.get("unique_effects", "")
+        if unique and unique.lower() not in ("none", "no unique mechanic", "no unique mechanic."):
+            lines.append(f"<span style='color:{TEXT_DIM}'>{unique}</span>")
+        self._detail_lines.setText("<br>".join(lines))
+        self._detail_strip.setVisible(True)
+
+
+_MINOR_SKIP_TYPES = {"basic"}   # fortune_types excluded from minor fortune picker
+
+
+class MinorFortunePanel(QWidget):
+    """
+    Compact minor fortune picker for ERR.  Shows only non-basic fortunes,
+    excluding whatever is active as the main fortune.  Displays minor_effects
+    for each option.  Emits minor_fortune_changed(name_or_empty).
+    """
+    minor_fortune_changed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fortunes: list      = []
+        self._main_fortune: str | None = None
+        self._selected: str | None = None
+        self.setStyleSheet("background: transparent;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Header
+        hdr = QWidget()
+        hdr.setStyleSheet(f"background: {BG_CARD}; border-bottom: 1px solid {BORDER_SOLID};")
+        hdr_l = QHBoxLayout(hdr)
+        hdr_l.setContentsMargins(12, 6, 12, 6)
+        hdr_l.setSpacing(6)
+        title = QLabel("MINOR FORTUNE")
+        title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {ACCENT_GOLD2}; background: transparent;")
+        hdr_l.addWidget(title)
+        hdr_l.addStretch()
+        self._sel_lbl = QLabel("None selected")
+        self._sel_lbl.setFont(QFont("Segoe UI", 9))
+        self._sel_lbl.setStyleSheet(f"color: {TEXT_DIM}; background: transparent;")
+        hdr_l.addWidget(self._sel_lbl)
+        root.addWidget(hdr)
+
+        # Scroll list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(180)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        self._inner = QWidget()
+        self._inner.setStyleSheet("background: transparent;")
+        self._list_layout = QVBoxLayout(self._inner)
+        self._list_layout.setContentsMargins(6, 4, 6, 4)
+        self._list_layout.setSpacing(2)
+        self._list_layout.addStretch()
+        scroll.setWidget(self._inner)
+        root.addWidget(scroll)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_fortunes(self, fortunes: list, main_fortune: str | None = None,
+                     current: str | None = None):
+        self._fortunes     = fortunes
+        self._main_fortune = main_fortune
+        self._selected     = current
+        self._rebuild()
+
+    def set_main_fortune(self, name: str | None):
+        """Called when the main fortune selection changes — exclude it from this list."""
+        if name == self._main_fortune:
+            return
+        self._main_fortune = name
+        # If our selection was just picked as main fortune, clear it
+        if self._selected and self._selected == name:
+            self._selected = None
+            self.minor_fortune_changed.emit("")
+        self._rebuild()
+
+    def set_selected(self, name: str | None):
+        self._selected = name
+        self._rebuild()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _eligible(self) -> list:
+        return [
+            f for f in self._fortunes
+            if f.get("fortune_type", "basic") not in _MINOR_SKIP_TYPES
+            and f.get("name") != self._main_fortune
+        ]
+
+    def _rebuild(self):
+        lay = self._list_layout
+        while lay.count() > 1:   # keep trailing stretch
+            item = lay.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        fortunes = self._eligible()
+
+        if not fortunes:
+            ph = QLabel("No minor fortunes available")
+            ph.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; padding: 8px;")
+            lay.insertWidget(lay.count() - 1, ph)
+            self._sel_lbl.setText("None selected")
+            return
+
+        for fortune in fortunes:
+            row = self._make_row(fortune)
+            lay.insertWidget(lay.count() - 1, row)
+
+        self._sel_lbl.setText(self._selected or "None selected")
+
+    def _make_row(self, fortune: dict) -> QWidget:
+        name         = fortune["name"]
+        selected     = name == self._selected
+        ftype        = fortune.get("fortune_type", "common")
+        type_col     = _FORTUNE_TYPE_COLOR.get(ftype, TEXT_DIM)
+        minor_fx     = fortune.get("minor_effects", "")
+        row_h        = 40 if minor_fx else 28
+
+        row = QWidget()
+        row.setObjectName("MFRow")
+        row.setFixedHeight(row_h)
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        if selected:
+            row.setStyleSheet("""
+                QWidget#MFRow {
+                    background: rgba(201,168,76,0.10);
+                    border: 1px solid rgba(201,168,76,0.40);
+                    border-radius: 4px;
+                }
+            """)
+        else:
+            row.setStyleSheet(f"""
+                QWidget#MFRow {{
+                    background: {BG_CARD};
+                    border: 1px solid {BORDER_SOLID};
+                    border-radius: 4px;
+                }}
+                QWidget#MFRow:hover {{ background: {BG_CARD_HOV}; }}
+            """)
+
+        rl = QVBoxLayout(row)
+        rl.setContentsMargins(8, 4, 8, 4)
+        rl.setSpacing(1)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+
+        dot = QLabel("●")
+        dot.setFixedWidth(10)
+        dot.setStyleSheet(f"color: {type_col}; font-size: 7px; background: transparent;")
+        top_row.addWidget(dot)
+
+        name_lbl = QLabel(name)
+        name_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold if selected else QFont.Weight.Normal))
+        name_lbl.setStyleSheet(
+            f"color: {ACCENT_GOLD if selected else TEXT_PRIMARY}; background: transparent;"
+        )
+        top_row.addWidget(name_lbl, 1)
+
+        if selected:
+            chk = QLabel("✓")
+            chk.setFixedWidth(14)
+            chk.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 10px; font-weight: 700; background: transparent;")
+            top_row.addWidget(chk)
+
+        rl.addLayout(top_row)
+
+        # minor_effects — only shown when the API populates it (non-basic fortunes)
+        if minor_fx:
+            fx_lbl = QLabel(str(minor_fx))
+            fx_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8px; background: transparent;")
+            rl.addWidget(fx_lbl)
+
+        def _click(_, n=name):
+            if self._selected == n:
+                self._selected = None
+                self.minor_fortune_changed.emit("")
+            else:
+                self._selected = n
+                self.minor_fortune_changed.emit(n)
+            self._sel_lbl.setText(self._selected or "None selected")
+            self._rebuild()
+
+        row.mousePressEvent = _click
+        return row
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main Build Planner Widget
+class BindingRunePanel(QWidget):
+    """
+    ERR Binding Runes picker.  Shows all runeforging categories as collapsible
+    sections.  Each rune row has a stepper (0 .. max_forge_level).
+    Emits inventory_changed(list) with the full runeInventory list on every change.
+    """
+    inventory_changed = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._categories: list = []
+        self._copies: dict[str, int] = {}   # name → copies
+        self._collapsed: set[str]    = set()
+        self.setStyleSheet("background: transparent;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        self._inner = QWidget()
+        self._inner.setStyleSheet("background: transparent;")
+        self._content_layout = QVBoxLayout(self._inner)
+        self._content_layout.setContentsMargins(8, 8, 8, 8)
+        self._content_layout.setSpacing(4)
+        self._content_layout.addStretch()
+        scroll.setWidget(self._inner)
+        root.addWidget(scroll, 1)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_runeforging(self, runeforging: dict, current_inventory: list = None):
+        self._categories = runeforging.get("categories", [])
+        self._copies = {}
+        for entry in (current_inventory or []):
+            if entry.get("name"):
+                self._copies[entry["name"]] = entry.get("copies", 0)
+        self._rebuild()
+
+    def set_inventory(self, inventory: list):
+        self._copies = {}
+        for entry in (inventory or []):
+            if entry.get("name"):
+                self._copies[entry["name"]] = entry.get("copies", 0)
+        self._rebuild()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _emit_inventory(self):
+        inv = []
+        for cat in self._categories:
+            for rune in cat.get("binding_runes", []):
+                name = rune.get("name", "")
+                copies = self._copies.get(name, 0)
+                if copies > 0:
+                    inv.append({"name": name, "effect": rune.get("effect", ""),
+                                "copies": copies})
+        self.inventory_changed.emit(inv)
+
+    def _rebuild(self):
+        lay = self._content_layout
+        while lay.count() > 1:
+            item = lay.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for cat in self._categories:
+            section = self._make_category(cat)
+            lay.insertWidget(lay.count() - 1, section)
+
+    def _make_category(self, cat: dict) -> QWidget:
+        cat_name    = cat.get("category", "")
+        cost_pieces = cat.get("cost_pieces")
+        max_forges  = cat.get("max_forges", 0)
+        runes       = cat.get("binding_runes", [])
+        collapsed   = cat_name in self._collapsed
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        vl = QVBoxLayout(container)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(2)
+
+        # ── Header (clickable to collapse) ─────────────────────────────────
+        header = QWidget()
+        header.setObjectName("BRCatHdr")
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
+        header.setStyleSheet(f"""
+            QWidget#BRCatHdr {{
+                background: {BG_CARD};
+                border: 1px solid {BORDER_SOLID};
+                border-radius: 5px;
+            }}
+            QWidget#BRCatHdr:hover {{ background: {BG_CARD_HOV}; }}
+        """)
+        header.setFixedHeight(34)
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(10, 0, 10, 0)
+        hl.setSpacing(6)
+
+        arrow_lbl = QLabel("▸" if collapsed else "▾")
+        arrow_lbl.setFixedWidth(14)
+        arrow_lbl.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; font-size: 10px;")
+        hl.addWidget(arrow_lbl)
+
+        cat_lbl = QLabel(cat_name.upper())
+        cat_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        cat_lbl.setStyleSheet(f"color: {ACCENT_GOLD2}; background: transparent; letter-spacing: 1px;")
+        hl.addWidget(cat_lbl, 1)
+
+        if cost_pieces is not None:
+            meta_lbl = QLabel(f"{cost_pieces} pieces/forge · max {max_forges}")
+            meta_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8px; background: transparent;")
+            hl.addWidget(meta_lbl)
+
+        vl.addWidget(header)
+
+        # ── Rune rows container ────────────────────────────────────────────
+        rows_widget = QWidget()
+        rows_widget.setStyleSheet("background: transparent;")
+        rows_layout = QVBoxLayout(rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(2)
+
+        for rune in runes:
+            row = self._make_rune_row(rune)
+            rows_layout.addWidget(row)
+
+        rows_widget.setVisible(not collapsed)
+        vl.addWidget(rows_widget)
+
+        # Toggle collapse on header click
+        def _toggle(_, cname=cat_name, rw=rows_widget, al=arrow_lbl):
+            if cname in self._collapsed:
+                self._collapsed.discard(cname)
+                rw.setVisible(True)
+                al.setText("▾")
+            else:
+                self._collapsed.add(cname)
+                rw.setVisible(False)
+                al.setText("▸")
+
+        header.mousePressEvent = _toggle
+        return container
+
+    def _make_rune_row(self, rune: dict) -> QWidget:
+        name          = rune.get("name", "")
+        effect        = rune.get("effect", "")
+        max_lvl       = rune.get("max_forge_level", 10)
+        ng_plus_only  = rune.get("ng_plus_only", False)
+
+        row = QWidget()
+        row.setObjectName("BRRow")
+        row.setStyleSheet(f"""
+            QWidget#BRRow {{
+                background: {BG_CARD};
+                border: 1px solid {BORDER_SOLID};
+                border-radius: 4px;
+            }}
+        """)
+        row.setFixedHeight(44)
+
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(10, 0, 6, 0)
+        rl.setSpacing(8)
+
+        info = QVBoxLayout()
+        info.setSpacing(1)
+
+        name_lbl = QLabel(name + (" [NG+]" if ng_plus_only else ""))
+        name_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent;")
+        info.addWidget(name_lbl)
+
+        eff_lbl = QLabel(effect)
+        eff_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8px; background: transparent;")
+        info.addWidget(eff_lbl)
+
+        rl.addLayout(info, 1)
+
+        # Stepper: [−]  N / max  [+]
+        copies = self._copies.get(name, 0)
+
+        minus_btn = QPushButton("−")
+        minus_btn.setFixedSize(22, 22)
+        minus_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                border-radius: 4px; color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {BG_CARD_HOV}; }}
+            QPushButton:disabled {{ color: {TEXT_MUTED}; }}
+        """)
+        minus_btn.setEnabled(copies > 0)
+
+        count_lbl = QLabel(f"{copies}/{max_lvl}")
+        count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        count_lbl.setFixedWidth(38)
+        count_lbl.setStyleSheet(
+            f"color: {ACCENT_GOLD if copies > 0 else TEXT_MUTED}; "
+            f"font-size: 9px; font-weight: {'700' if copies > 0 else '400'}; "
+            f"background: transparent;"
+        )
+
+        plus_btn = QPushButton("+")
+        plus_btn.setFixedSize(22, 22)
+        plus_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                border-radius: 4px; color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {BG_CARD_HOV}; }}
+            QPushButton:disabled {{ color: {TEXT_MUTED}; }}
+        """)
+        plus_btn.setEnabled(copies < max_lvl)
+
+        rl.addWidget(minus_btn)
+        rl.addWidget(count_lbl)
+        rl.addWidget(plus_btn)
+
+        def _update_row(new_copies, ml=max_lvl, cl=count_lbl, mb=minus_btn, pb=plus_btn):
+            cl.setText(f"{new_copies}/{ml}")
+            active = new_copies > 0
+            cl.setStyleSheet(
+                f"color: {ACCENT_GOLD if active else TEXT_MUTED}; "
+                f"font-size: 9px; font-weight: {'700' if active else '400'}; "
+                f"background: transparent;"
+            )
+            mb.setEnabled(new_copies > 0)
+            pb.setEnabled(new_copies < ml)
+
+        def _minus(_, n=name, ml=max_lvl):
+            c = max(0, self._copies.get(n, 0) - 1)
+            self._copies[n] = c
+            _update_row(c, ml)
+            self._emit_inventory()
+
+        def _plus(_, n=name, ml=max_lvl):
+            c = min(ml, self._copies.get(n, 0) + 1)
+            self._copies[n] = c
+            _update_row(c, ml)
+            self._emit_inventory()
+
+        minus_btn.clicked.connect(_minus)
+        plus_btn.clicked.connect(_plus)
+        return row
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 class BuildPlannerWidget(QWidget):
     """
@@ -1857,8 +2684,10 @@ class BuildPlannerWidget(QWidget):
 
     Signals:
         start_run_requested(dict) — emits build dict so caller can pre-fill NewRunPanel
+        cloud_build_changed()     — emitted after any cloud save or delete so caller can force_refresh
     """
     start_run_requested = pyqtSignal(dict)
+    cloud_build_changed = pyqtSignal()
 
     def __init__(self, api_key=None, parent=None):
         super().__init__(parent)
@@ -1946,10 +2775,27 @@ class BuildPlannerWidget(QWidget):
             if data.game == "err":
                 self._curio_panel.set_curios(data.curios)
                 self._curios_tab_btn.setVisible(True)
+                self._fortune_panel.set_fortunes(
+                    data.fortunes,
+                    current=self._build.get("fortune_name")
+                )
+                self._minor_fortune_panel.set_fortunes(
+                    data.fortunes,
+                    main_fortune=self._build.get("fortune_name"),
+                    current=self._build.get("minor_fortune_name"),
+                )
+                self._fortunes_tab_btn.setVisible(True)
+                self._binding_rune_panel.set_runeforging(
+                    data.runeforging,
+                    current_inventory=self._build.get("runeInventory", []),
+                )
+                self._binding_runes_tab_btn.setVisible(True)
             else:
                 self._curios_tab_btn.setVisible(False)
-                # Switch away from CURIOS tab if it was active
-                if self._current_center_tab == 6:
+                self._fortunes_tab_btn.setVisible(False)
+                self._binding_runes_tab_btn.setVisible(False)
+                # Switch away from ERR-only tabs if active
+                if self._current_center_tab in (6, 7, 8):
                     self._switch_center_tab(0)
             # Apply stat caps to stat rows
             for key, row in self._stat_rows.items():
@@ -1989,19 +2835,37 @@ class BuildPlannerWidget(QWidget):
             local = local_by_name.get(name)
             cloud_ts = cb.get("updated_at", 0) or 0
             local_ts = float(local.get("saved_at", 0) or 0) if local else 0
+
+            # Cloud wins if: no local copy, cloud is newer, or cloud has ERR fields
+            # the local copy is missing (e.g. fortune_name added server-side after local save)
+            _GAME_REMAP = {"reforged": "err", "vanilla": "elden_ring"}
+            game = _GAME_REMAP.get(cb.get("game", ""), cb.get("game", "elden_ring"))
+            # Local rune names set vs cloud rune names set — detect server-side changes
+            local_rune_names = {r.get("name") for r in (local.get("runeInventory", []) if local else [])}
+            cloud_rune_names = {r.get("name") for r in cb.get("rune_inventory", [])}
+            cloud_rune_copies = {r.get("name"): r.get("copies", 0) for r in cb.get("rune_inventory", [])}
+            local_rune_copies = {r.get("name"): r.get("copies", 0) for r in (local.get("runeInventory", []) if local else [])}
+            local_missing_err_fields = (
+                game == "err" and local is not None
+                and (
+                    (not local.get("fortune_name") and cb.get("fortune_name"))
+                    or local_rune_names != cloud_rune_names
+                    or local_rune_copies != cloud_rune_copies
+                )
+            )
             if local is None:
                 normalised = self._normalise_cloud_build(cb)
                 _save_build_local(normalised)
                 changed = True
-                log.info("Cloud sync new: %s (game=%s)", name, cb.get("game"))
-            elif local_ts > cloud_ts:
-                # Local is newer — keep it, skip cloud overwrite
+                log.info("Cloud sync new: %s (game=%s)", name, game)
+            elif local_ts > cloud_ts and not local_missing_err_fields and game != "err":
+                # Local is newer and has all the data — keep it (ERR always syncs from cloud)
                 log.info("Cloud sync skip (local newer): %s local_ts=%.0f cloud_ts=%d", name, local_ts, cloud_ts)
             else:
                 normalised = self._normalise_cloud_build(cb)
                 _save_build_local(normalised)
                 changed = True
-                log.info("Cloud sync updated: %s (game=%s)", name, cb.get("game"))
+                log.info("Cloud sync updated: %s (game=%s)", name, game)
             if cloud_id:
                 self._synced_cloud_ids.add(cloud_id)
         if changed:
@@ -2009,7 +2873,8 @@ class BuildPlannerWidget(QWidget):
 
     def _normalise_cloud_build(self, cb: dict) -> dict:
         """Convert profile API build dict into local build dict."""
-        game = cb.get("game", "elden_ring")
+        _GAME_REMAP = {"reforged": "err", "vanilla": "elden_ring"}
+        game = _GAME_REMAP.get(cb.get("game", ""), cb.get("game", "elden_ring"))
         build = _empty_build(game)
         build["name"]          = cb.get("name", "Cloud Build")
         build["cloud_id"]      = cb.get("id")
@@ -2093,6 +2958,8 @@ class BuildPlannerWidget(QWidget):
         # ERR extras
         build["curioSelections"] = cb.get("curio_selections", {})
         build["runeInventory"]   = cb.get("rune_inventory", [])
+        build["fortune_name"]       = cb.get("fortune_name")       or None
+        build["minor_fortune_name"] = cb.get("minor_fortune_name") or None
         return build
 
     # ── Planner layout ─────────────────────────────────────────────────────────
@@ -2195,6 +3062,18 @@ class BuildPlannerWidget(QWidget):
                 row_w.addLayout(cell, 1)
                 self._derived_labels[key] = val_w
             dc_outer.addLayout(row_w)
+
+        self._equip_disclaimer = QLabel(
+            "ERR modifies armor and weapon weights differently than ER. "
+            "We use ER weight data as an approximation - equip load and roll type may be slightly off."
+        )
+        self._equip_disclaimer.setWordWrap(True)
+        self._equip_disclaimer.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 9px; font-style: italic; background: transparent;"
+        )
+        self._equip_disclaimer.setVisible(False)
+        dc_outer.addWidget(self._equip_disclaimer)
+
         left_layout.addWidget(derived_card)
 
         # Scadutree
@@ -2232,15 +3111,29 @@ class BuildPlannerWidget(QWidget):
         # Save / start run buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        save_btn = QPushButton("SAVE BUILD")
-        save_btn.setObjectName("primary")
+        save_local_btn = QPushButton("SAVE LOCAL")
+        save_local_btn.setFixedHeight(36)
+        save_local_btn.setToolTip("Save build to disk only — never synced to QuestLog")
+        save_local_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                color: {TEXT_MUTED}; font-size: 11px; font-weight: 700;
+                letter-spacing: 1px; border-radius: 6px;
+            }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD}; }}
+        """)
+        save_local_btn.clicked.connect(self._save_build_local_only)
+        save_btn = QPushButton("SAVE TO QUESTLOG")
+        save_btn.setObjectName("ql-save")
         save_btn.setFixedHeight(36)
+        save_btn.setToolTip("Save build and sync to your QuestLog account")
         save_btn.clicked.connect(self._save_build)
         start_btn = QPushButton("START RUN")
         start_btn.setObjectName("primary")
         start_btn.setFixedHeight(36)
         start_btn.setToolTip("Create a run with this build's name and game")
         start_btn.clicked.connect(self._request_start_run)
+        btn_row.addWidget(save_local_btn)
         btn_row.addWidget(save_btn)
         btn_row.addWidget(start_btn)
         left_layout.addLayout(btn_row)
@@ -2335,6 +3228,44 @@ class BuildPlannerWidget(QWidget):
         self._curios_tab_btn.clicked.connect(lambda: self._switch_center_tab(curios_tab_idx))
         tab_bar_l.insertWidget(tab_bar_l.count() - 1, self._curios_tab_btn)
         self._center_tabs["CURIOS"] = self._curios_tab_btn
+
+        # FORTUNES tab — ERR only, hidden by default
+        self._fortunes_tab_btn = QPushButton("FORTUNES")
+        self._fortunes_tab_btn.setCheckable(True)
+        self._fortunes_tab_btn.setFixedHeight(38)
+        self._fortunes_tab_btn.setVisible(False)
+        self._fortunes_tab_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: none; border-bottom: 2px solid transparent;
+                color: {TEXT_DIM}; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                padding: 0 10px; margin-bottom: -2px;
+            }}
+            QPushButton:checked {{ color: {ACCENT_GOLD}; border-bottom: 2px solid {ACCENT_GOLD}; }}
+            QPushButton:hover:!checked {{ color: {TEXT_PRIMARY}; }}
+        """)
+        fortunes_tab_idx = len(_CTR_TABS) + 1
+        self._fortunes_tab_btn.clicked.connect(lambda: self._switch_center_tab(fortunes_tab_idx))
+        tab_bar_l.insertWidget(tab_bar_l.count() - 1, self._fortunes_tab_btn)
+        self._center_tabs["FORTUNES"] = self._fortunes_tab_btn
+
+        # BINDING RUNES tab — ERR only, hidden by default
+        self._binding_runes_tab_btn = QPushButton("BINDING RUNES")
+        self._binding_runes_tab_btn.setCheckable(True)
+        self._binding_runes_tab_btn.setFixedHeight(38)
+        self._binding_runes_tab_btn.setVisible(False)
+        self._binding_runes_tab_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: none; border-bottom: 2px solid transparent;
+                color: {TEXT_DIM}; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                padding: 0 10px; margin-bottom: -2px;
+            }}
+            QPushButton:checked {{ color: {ACCENT_GOLD}; border-bottom: 2px solid {ACCENT_GOLD}; }}
+            QPushButton:hover:!checked {{ color: {TEXT_PRIMARY}; }}
+        """)
+        binding_runes_tab_idx = len(_CTR_TABS) + 2
+        self._binding_runes_tab_btn.clicked.connect(lambda: self._switch_center_tab(binding_runes_tab_idx))
+        tab_bar_l.insertWidget(tab_bar_l.count() - 1, self._binding_runes_tab_btn)
+        self._center_tabs["BINDING RUNES"] = self._binding_runes_tab_btn
 
         center_col_layout.addWidget(tab_bar_w)
         center_col_layout.addWidget(self._center_stack, 1)
@@ -2502,6 +3433,40 @@ class BuildPlannerWidget(QWidget):
         lay.addStretch()
         self._center_stack.addWidget(pg)
 
+        # Tab 7 — FORTUNES (ERR only): MAJOR on top (fills space), MINOR below (fixed height)
+        fortunes_page = QWidget()
+        fortunes_page.setStyleSheet(f"background: {BG_BASE};")
+        fp_layout = QVBoxLayout(fortunes_page)
+        fp_layout.setContentsMargins(0, 0, 0, 0)
+        fp_layout.setSpacing(0)
+
+        # MAJOR FORTUNE header
+        major_hdr = QWidget()
+        major_hdr.setStyleSheet(f"background: {BG_CARD}; border-bottom: 1px solid {BORDER_SOLID};")
+        major_hdr_l = QHBoxLayout(major_hdr)
+        major_hdr_l.setContentsMargins(12, 6, 12, 6)
+        major_lbl = QLabel("MAJOR FORTUNE")
+        major_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        major_lbl.setStyleSheet(f"color: {ACCENT_GOLD2}; background: transparent;")
+        major_hdr_l.addWidget(major_lbl)
+        major_hdr_l.addStretch()
+        fp_layout.addWidget(major_hdr)
+
+        self._fortune_panel = FortunePanel()
+        self._fortune_panel.fortune_changed.connect(self._on_fortune_changed)
+        fp_layout.addWidget(self._fortune_panel, 1)
+
+        self._minor_fortune_panel = MinorFortunePanel()
+        self._minor_fortune_panel.minor_fortune_changed.connect(self._on_minor_fortune_changed)
+        fp_layout.addWidget(self._minor_fortune_panel)
+
+        self._center_stack.addWidget(fortunes_page)
+
+        # Tab 8 — BINDING RUNES (ERR only) — panel manages its own scroll
+        self._binding_rune_panel = BindingRunePanel()
+        self._binding_rune_panel.inventory_changed.connect(self._on_rune_inventory_changed)
+        self._center_stack.addWidget(self._binding_rune_panel)
+
         # Activate first tab
         self._current_center_tab = 0
         self._switch_center_tab(0)
@@ -2572,9 +3537,17 @@ class BuildPlannerWidget(QWidget):
         self._overlay_filter = _OverlayFilter(content_area)
         content_area.installEventFilter(self._overlay_filter)
 
-        # Give the splitter initial proportions: 50% left | 50% center
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
+        self._main_splitter = splitter
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Force 50/50 split on first show using actual widget width
+        w = self._main_splitter.width()
+        if w > 0:
+            half = w // 2
+            self._main_splitter.setSizes([half, w - half])
 
     # ── Overlay helpers ────────────────────────────────────────────────────────
 
@@ -2598,7 +3571,7 @@ class BuildPlannerWidget(QWidget):
     def _switch_center_tab(self, idx: int):
         self._current_center_tab = idx
         self._center_stack.setCurrentIndex(idx)
-        tab_labels = ["ARMAMENT", "ARMOR", "TALISMANS", "SPIRIT", "PHYSICK", "SPELLS", "CURIOS"]
+        tab_labels = ["ARMAMENT", "ARMOR", "TALISMANS", "SPIRIT", "PHYSICK", "SPELLS", "CURIOS", "FORTUNES"]
         for i, lbl in enumerate(tab_labels):
             btn = self._center_tabs.get(lbl)
             if btn:
@@ -2612,6 +3585,9 @@ class BuildPlannerWidget(QWidget):
             self._build_name_input.setText(self._build["name"])
         self._reset_slot_ui()
         self._reset_spell_ui()
+        self._fortune_panel.set_selected(None)
+        self._minor_fortune_panel.set_selected(None)
+        self._binding_rune_panel.set_inventory([])
         self._load_data(game)
 
     def _populate_class_picker(self):
@@ -2669,13 +3645,6 @@ class BuildPlannerWidget(QWidget):
             # Keep min enforced on the spinbox even if value didn't change
             self._stat_rows[key].set_min(base)
 
-        # ERR: update rune bonuses on stat rows
-        if self._build["game"] == "err":
-            from core.ar_calculator import calc_rune_bonuses
-            bonuses = calc_rune_bonuses(self._build.get("runeInventory", []))
-            for k, row in self._stat_rows.items():
-                row.set_rune_bonus(bonuses.get(k, 0))
-
         self._recalc()
 
     def _on_scadu_changed(self, val):
@@ -2697,16 +3666,71 @@ class BuildPlannerWidget(QWidget):
         build  = self._build
         game   = build["game"]
         stats  = build["stats"]
-        err_curves = self._data.err_curves if self._data and game == "err" else None
+        err_curves   = self._data.err_curves if self._data and game == "err" else None
+        fortune_name = build.get("fortune_name") if game == "err" else None
         cls    = None
         if self._data and build["class_id"]:
             cls = next((c for c in self._data.classes if c.get("id") == build["class_id"]), None)
 
-        d = get_derived(stats, game, err_curves)
+        # For ERR, apply rune and fortune bonuses before derived stat calculation
+        if game == "err":
+            from core.ar_calculator import get_effective_stats, calc_rune_bonuses
+            from core.derived_stats import FORTUNE_STAT_BONUSES
+            # Cloud-loaded inventories only have {name, copies} — restore effect from catalog
+            raw_inv = build.get("runeInventory", [])
+            if self._data and self._data.runeforging:
+                rune_effect_map = {
+                    r["name"]: r.get("effect", "")
+                    for cat in self._data.runeforging.get("categories", [])
+                    for r in cat.get("binding_runes", [])
+                }
+                raw_inv = [
+                    {**r, "effect": r.get("effect") or rune_effect_map.get(r.get("name", ""), "")}
+                    for r in raw_inv
+                ]
+            eff_stats = get_effective_stats(stats, raw_inv)
+            f_bonuses = FORTUNE_STAT_BONUSES.get(fortune_name, {}) if fortune_name else {}
+            # Update per-row indicators
+            rune_bonuses = calc_rune_bonuses(raw_inv)
+            for k, row in self._stat_rows.items():
+                row.set_rune_bonus(rune_bonuses.get(k, 0))
+                row.set_fortune_bonus(f_bonuses.get(k, 0))
+        else:
+            eff_stats = stats
+            f_bonuses = {}
+            for row in self._stat_rows.values():
+                row.set_rune_bonus(0)
+                row.set_fortune_bonus(0)
+
+        d = get_derived(eff_stats, game, err_curves, fortune_name=fortune_name)
+
+        # Apply binding rune derived-stat multipliers (ERR only, compound per copy)
+        if game == "err":
+            from core.derived_stats import (
+                calc_rune_derived_mults,
+                calc_equip_load_err, calc_total_weight_err, get_frame_type_err,
+                FRAME_COLORS,
+            )
+            rm = calc_rune_derived_mults(raw_inv)
+            d = dict(d)
+            d["hp"]      = int(d["hp"]      * rm["hp"])
+            d["fp"]      = int(d["fp"]      * rm["fp"])
+            d["stamina"] = int(d["stamina"] * rm["stamina"])
+            # ERR equip load: base 100, fortune + Leonine Weight rune, endurance ignored
+            d["equip_load"] = calc_equip_load_err(fortune_name, raw_inv)
+            weight = calc_total_weight_err(build["slots"])
+            frame  = get_frame_type_err(weight, d["equip_load"], fortune_name)
+            roll   = frame
+            roll_color = FRAME_COLORS.get(frame, TEXT_PRIMARY)
+        else:
+            weight = calc_total_weight(build["slots"])
+            roll   = get_roll_type(weight, d["equip_load"])
+            roll_colors = {"Light Roll": GREEN_LIVE, "Medium Roll": ACCENT_GOLD,
+                           "Heavy Roll": ACCENT_RED2, "Overloaded": "#ef4444"}
+            roll_color = roll_colors.get(roll, TEXT_PRIMARY)
+
         level = calc_level(stats, build["class_base"], cls, game)
-        weight = calc_total_weight(build["slots"])
         poise  = calc_poise(build["slots"])
-        roll   = get_roll_type(weight, d["equip_load"])
 
         self._derived_labels["level"].setText(str(level))
         self._derived_labels["hp"].setText(str(d["hp"]))
@@ -2714,12 +3738,11 @@ class BuildPlannerWidget(QWidget):
         self._derived_labels["stamina"].setText(str(d["stamina"]))
         self._derived_labels["equip_load"].setText(f"{weight}/{d['equip_load']}")
         self._derived_labels["poise"].setText(str(poise))
-        roll_colors = {"Light Roll": GREEN_LIVE, "Medium Roll": ACCENT_GOLD,
-                       "Heavy Roll": ACCENT_RED2, "Overloaded": "#ef4444"}
         self._derived_labels["roll"].setText(roll)
         self._derived_labels["roll"].setStyleSheet(
-            f"color: {roll_colors.get(roll, TEXT_PRIMARY)}; background: transparent;"
+            f"color: {roll_color}; background: transparent;"
         )
+        self._equip_disclaimer.setVisible(game == "err")
 
         self._build["level"] = level
 
@@ -2740,9 +3763,10 @@ class BuildPlannerWidget(QWidget):
             self._ar_panel.clear()
             return
         affinity = self._build["affinities"].get(slot_key, "Standard")
-        aow = self._build.get("aow", {}).get(slot_key)
-        aow_name = (aow if isinstance(aow, str) else aow.get("name", "")) if aow else None
-        self._ar_panel.set_aow(aow_name)
+        if not _weapon_skill_locked(weapon):
+            aow = self._build.get("aow", {}).get(slot_key)
+            aow_name = (aow if isinstance(aow, str) else aow.get("name", "")) if aow else None
+            self._ar_panel.set_aow(aow_name)
         self._fetch_and_show_ar(slot_key, weapon, affinity)
 
     def _fetch_and_show_ar(self, slot_key, weapon, affinity):
@@ -2796,7 +3820,22 @@ class BuildPlannerWidget(QWidget):
         stats = self._build["stats"]
         if game == "err":
             from core.ar_calculator import get_effective_stats
-            eff_stats = get_effective_stats(stats, self._build.get("runeInventory", []))
+            from core.derived_stats import apply_fortune_stat_bonuses
+            raw_inv = self._build.get("runeInventory", [])
+            if self._data and self._data.runeforging:
+                rune_effect_map = {
+                    r["name"]: r.get("effect", "")
+                    for cat in self._data.runeforging.get("categories", [])
+                    for r in cat.get("binding_runes", [])
+                }
+                raw_inv = [
+                    {**r, "effect": r.get("effect") or rune_effect_map.get(r.get("name", ""), "")}
+                    for r in raw_inv
+                ]
+            eff_stats = get_effective_stats(stats, raw_inv)
+            fortune_name = self._build.get("fortune_name")
+            if fortune_name:
+                eff_stats = apply_fortune_stat_bonuses(eff_stats, fortune_name)
         else:
             eff_stats = stats
 
@@ -2815,11 +3854,14 @@ class BuildPlannerWidget(QWidget):
 
         self._ar_panel.show_ar(weapon, result, affinity=affinity, affinities=avail_names)
 
-        # Populate inline affinity row in the armament card
+        # Populate inline affinity row — hide for locked-skill weapons
         aff_row = self._affinity_rows.get(slot_key)
         if aff_row:
-            current_aff = self._build["affinities"].get(slot_key, "Standard")
-            aff_row.set_affinities(avail_names, current_aff)
+            if _weapon_skill_locked(weapon):
+                aff_row.hide_row()
+            else:
+                current_aff = self._build["affinities"].get(slot_key, "Standard")
+                aff_row.set_affinities(avail_names, current_aff)
 
     def _on_affinity_changed(self, affinity):
         slot_key = self._ar_panel._slot_combo.currentData() or "rh1"
@@ -2849,6 +3891,18 @@ class BuildPlannerWidget(QWidget):
             variants = self._variant_cache.get(f"{self._build['game']}|{weapon.get('name')}", [])
             if variants:
                 self._show_ar_from_variants(slot_key, weapon, affinity, variants)
+
+    def _on_fortune_changed(self, fortune_name: str):
+        self._build["fortune_name"] = fortune_name or None
+        self._minor_fortune_panel.set_main_fortune(fortune_name or None)
+        self._recalc()
+
+    def _on_minor_fortune_changed(self, fortune_name: str):
+        self._build["minor_fortune_name"] = fortune_name or None
+
+    def _on_rune_inventory_changed(self, inventory: list):
+        self._build["runeInventory"] = inventory
+        self._recalc()
 
     # ── Picker ────────────────────────────────────────────────────────────────
 
@@ -3051,7 +4105,12 @@ class BuildPlannerWidget(QWidget):
             self._build["aow"][slot_key] = None
             if slot_key in self._aow_rows:
                 self._aow_rows[slot_key].set_weapon(item)
-                self._aow_rows[slot_key].set_aow(None)
+                if not _weapon_skill_locked(item):
+                    self._aow_rows[slot_key].set_aow(None)
+            if slot_key in self._affinity_rows:
+                if _weapon_skill_locked(item):
+                    self._affinity_rows[slot_key].hide_row()
+                # infusable weapon affinity row is populated once AR variants load
             # Switch overlay to AR panel (keep it open so user sees damage stats)
             self._right_stack.setCurrentIndex(0)
             self._reposition_overlay(w=self._overlay_ar_w)
@@ -3208,13 +4267,46 @@ class BuildPlannerWidget(QWidget):
 
     # ── Save / Load ───────────────────────────────────────────────────────────
 
-    def _save_build(self):
+    def _require_class(self) -> bool:
+        """Returns True if a class is selected, otherwise shows an error and returns False."""
+        if self._build.get("class_id") is not None:
+            return True
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Class Required")
+        dlg.setText("Please select a class before saving or starting a run.")
+        dlg.setInformativeText(
+            "Every build needs a starting class. It sets your base stats and minimum level."
+        )
+        dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dlg.setDefaultButton(QMessageBox.StandardButton.Ok)
+        dlg.exec()
+        # Scroll the class combo into view so it's obvious what to fix
+        self._class_combo.setFocus()
+        return False
+
+    def _prepare_build_for_save(self) -> dict:
         build = dict(self._build)
         build["level"] = self._derived_labels["level"].text()
         for slot in WEAPON_SLOTS + ARMOR_SLOTS + TALI_SLOTS:
             item = build["slots"].get(slot)
             if item:
                 build["slots"][slot] = {"id": item.get("id"), "name": item.get("name")}
+        return build
+
+    def _save_build_local_only(self):
+        if not self._require_class():
+            return
+        build = self._prepare_build_for_save()
+        # Strip cloud_id so this is never treated as a synced build
+        build.pop("cloud_id", None)
+        _save_build_local(build)
+        self._refresh_saved_builds()
+        log.info("Build saved locally (no cloud): %s", build.get("name"))
+
+    def _save_build(self):
+        if not self._require_class():
+            return
+        build = self._prepare_build_for_save()
         _save_build_local(build)
         self._refresh_saved_builds()
         log.info("Build saved locally: %s", build.get("name"))
@@ -3223,12 +4315,13 @@ class BuildPlannerWidget(QWidget):
 
     def _cloud_save(self, build: dict):
         try:
-            from core.questlog_sync import QuestLogSync, BASE_URL
-            game  = build.get("game", "elden_ring")
-            slots = build.get("slots", {})
-            tears = build.get("tears", [None, None])
-            aows  = build.get("aow", {})
+            from core.questlog_sync import BASE_URL
+            game       = build.get("game") or "elden_ring"
+            slots      = build.get("slots", {})
+            tears      = build.get("tears", [None, None])
+            aows       = build.get("aow", {})
             affinities = build.get("affinities", {})
+            stats      = build.get("stats", {})
 
             def _id(slot_key):
                 item = slots.get(slot_key)
@@ -3242,58 +4335,105 @@ class BuildPlannerWidget(QWidget):
                 t = tears[idx] if len(tears) > idx else None
                 return t.get("name") if isinstance(t, dict) else t
 
-            # Nested weapons dict: {rh1: id, rh1_aow: name, rh1_affinity: str, ...}
-            weapons = {}
-            for ws in WEAPON_SLOTS:
-                side = "rh" if ws.startswith("r") else "lh"
-                num  = ws[-1]
-                key  = f"{side}{num}"
-                weapons[key]              = _id(ws)
-                weapons[f"{key}_aow"]     = _aow_name(ws)
-                weapons[f"{key}_affinity"] = affinities.get(ws, "Standard")
-
-            # Nested armor dict: {helm: id, chest: id, gauntlet: id, leg: id}
-            armor = {slot: _id(slot) for slot in ARMOR_SLOTS}
-
-            # Talismans list: [id_or_null, id_or_null, id_or_null, id_or_null]
-            talismans = [_id(f"talisman{i}") for i in range(1, 5)]
-
             ash = build.get("spirit_ash")
-            payload = {
-                "name":             build.get("name", "Untitled Build"),
-                "class_id":         build.get("class_id"),
-                "level":            int(build.get("level", 1)),
-                "tag":              build.get("playstyle_tag", "pve"),
-                "scadutree_level":  build.get("scadutree", 0),
-                "stats":            {s: build.get("stats", {}).get(s, 1) for s in STAT_KEYS},
-                "weapons":          weapons,
-                "armor":            armor,
-                "talismans":        talismans,
-                "spell_ids":        [sp.get("id") for sp in build.get("spells", []) if isinstance(sp, dict)],
-                "spirit_ash_name":    ash.get("name") if isinstance(ash, dict) else ash,
-                "spirit_ash_upgrade": build.get("spirit_ash_upgrade", 0),
-                "tear_1_name":      _tear_name(0),
-                "tear_2_name":      _tear_name(1),
-            }
-            if game == "err":
-                payload["curio_selections"] = build.get("curioSelections", {})
-                payload["rune_inventory"]   = build.get("runeInventory", [])
 
-            import requests
-            r = requests.post(
-                f"{BASE_URL}/api/soulslike/desktop/builds/?game={game}",
-                json=payload,
-                headers={"X-Listener-Key": self._api_key},
-                timeout=10,
-            )
+            # Flat payload matching the desktop API contract
+            payload = {
+                "name":              build.get("name", "Untitled Build"),
+                "class_id":          build.get("class_id"),
+                "total_level":       int(build.get("level", 1)),
+                "playstyle_tag":     build.get("playstyle_tag", "pve"),
+                "is_public":         False,
+                "description":       build.get("description", ""),
+                "scadutree_level":   build.get("scadutree", 0),
+                # Stats — flat keys
+                "vigor":             stats.get("vig", 10),
+                "mind":              stats.get("min", 10),
+                "endurance":         stats.get("end", 10),
+                "strength":          stats.get("str", 10),
+                "dexterity":         stats.get("dex", 10),
+                "intelligence":      stats.get("int", 10),
+                "faith":             stats.get("fai", 10),
+                "arcane":            stats.get("arc", 10),
+                # Weapons — flat keys
+                "rh1_weapon_id":     _id("rh1"),
+                "rh1_aow_name":      _aow_name("rh1"),
+                "rh1_affinity":      affinities.get("rh1", "Standard"),
+                "rh2_weapon_id":     _id("rh2"),
+                "rh2_aow_name":      _aow_name("rh2"),
+                "rh2_affinity":      affinities.get("rh2", "Standard"),
+                "rh3_weapon_id":     _id("rh3"),
+                "rh3_aow_name":      _aow_name("rh3"),
+                "rh3_affinity":      affinities.get("rh3", "Standard"),
+                "lh1_weapon_id":     _id("lh1"),
+                "lh1_aow_name":      _aow_name("lh1"),
+                "lh1_affinity":      affinities.get("lh1", "Standard"),
+                "lh2_weapon_id":     _id("lh2"),
+                "lh2_aow_name":      _aow_name("lh2"),
+                "lh2_affinity":      affinities.get("lh2", "Standard"),
+                "lh3_weapon_id":     _id("lh3"),
+                "lh3_aow_name":      _aow_name("lh3"),
+                "lh3_affinity":      affinities.get("lh3", "Standard"),
+                # Armor — flat keys
+                "helm_id":           _id("helm"),
+                "chest_id":          _id("chest"),
+                "gauntlet_id":       _id("gauntlet"),
+                "leg_id":            _id("leg"),
+                # Talismans — flat keys
+                "talisman_1_id":     _id("talisman1"),
+                "talisman_2_id":     _id("talisman2"),
+                "talisman_3_id":     _id("talisman3"),
+                "talisman_4_id":     _id("talisman4"),
+                # Spells — list of ids
+                "spells":            [sp.get("id") for sp in build.get("spells", []) if isinstance(sp, dict)],
+                # Spirit ash
+                "spirit_ash_name":   ash.get("name") if isinstance(ash, dict) else ash,
+                "spirit_ash_upgrade": build.get("spirit_ash_upgrade", 0),
+                # Physick tears
+                "tear_1_name":       _tear_name(0),
+                "tear_2_name":       _tear_name(1),
+                # ERR-only
+                "fortune_name":       build.get("fortune_name")       if game == "err" else None,
+                "minor_fortune_name": build.get("minor_fortune_name") if game == "err" else None,
+                "curio_selections":   build.get("curioSelections", {}) if game == "err" else None,
+                "rune_inventory":     [
+                    {"name": r["name"], "copies": r["copies"]}
+                    for r in build.get("runeInventory", [])
+                    if r.get("name") and r.get("copies", 0) > 0
+                ] if game == "err" else None,
+            }
+
+            import json as _json
+            log.info("Cloud save payload: %s", _json.dumps(payload, default=str)[:2000])
+            cloud_id = build.get("cloud_id")
+            if cloud_id:
+                # Update existing build
+                r = _http.patch(
+                    f"{BASE_URL}/api/soulslike/desktop/builds/{cloud_id}/?game={game}",
+                    json=payload,
+                    headers={"X-Listener-Key": self._api_key},
+                    timeout=10,
+                )
+            else:
+                # Create new build
+                r = _http.post(
+                    f"{BASE_URL}/api/soulslike/desktop/builds/?game={game}",
+                    json=payload,
+                    headers={"X-Listener-Key": self._api_key},
+                    timeout=10,
+                )
             if r.ok:
                 resp = r.json()
-                cloud_id = resp.get("id")
-                if cloud_id:
-                    _update_build_cloud_id(build.get("name", ""), cloud_id)
-                log.info("Cloud save OK id=%s", cloud_id)
+                new_id = resp.get("id") or cloud_id
+                if new_id:
+                    _update_build_cloud_id(build.get("name", ""), new_id)
+                log.info("Cloud save OK id=%s (method=%s)", new_id, "PATCH" if cloud_id else "POST")
+                self.cloud_build_changed.emit()
             else:
-                log.warning("Cloud save → %d %s", r.status_code, r.text[:200])
+                log.warning("Cloud save → %d\nPayload: %s\nResponse: %s",
+                            r.status_code,
+                            _json.dumps(payload, default=str)[:3000],
+                            r.text[:1000])
         except Exception as e:
             log.warning("Cloud save failed: %s", e)
 
@@ -3348,7 +4488,8 @@ class BuildPlannerWidget(QWidget):
         for ws, aow_row in self._aow_rows.items():
             weapon = self._build["slots"].get(ws)
             aow_row.set_weapon(weapon)
-            aow_row.set_aow(self._build["aow"].get(ws))
+            if weapon and not _weapon_skill_locked(weapon):
+                aow_row.set_aow(self._build["aow"].get(ws))
         # Resolve spirit ash name stub if needed
         ash = self._build.get("spirit_ash")
         if isinstance(ash, str) and self._data:
@@ -3402,9 +4543,46 @@ class BuildPlannerWidget(QWidget):
             self._curio_panel._selections = build["curioSelections"]
             self._curio_panel._rebuild()
 
+        if self._fortunes_tab_btn.isVisible():
+            self._fortune_panel.set_selected(build.get("fortune_name"))
+            self._minor_fortune_panel.set_fortunes(
+                self._data.fortunes if self._data else [],
+                main_fortune=build.get("fortune_name"),
+                current=build.get("minor_fortune_name"),
+            )
+
+        if self._binding_runes_tab_btn.isVisible() and self._data:
+            self._binding_rune_panel.set_runeforging(
+                self._data.runeforging,
+                current_inventory=build.get("runeInventory", []),
+            )
+
         self._recalc()
 
     def _delete_build(self, name: str):
+        # Check for cloud_id before asking so we can warn accordingly
+        has_cloud = False
+        if self._api_key:
+            for b in _list_saved_builds():
+                if b.get("name") == name and b.get("cloud_id"):
+                    has_cloud = True
+                    break
+
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Delete Build")
+        dlg.setText(f"Delete <b>{name}</b>?")
+        if has_cloud:
+            dlg.setInformativeText(
+                "This will permanently delete the build from the app AND your QuestLog account. "
+                "This cannot be undone."
+            )
+        else:
+            dlg.setInformativeText("This will permanently remove the build. This cannot be undone.")
+        dlg.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes)
+        dlg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if dlg.exec() != QMessageBox.StandardButton.Yes:
+            return
+
         # Delete from cloud first (non-blocking) if we have a cloud_id
         if self._api_key:
             for b in _list_saved_builds():
@@ -3413,15 +4591,16 @@ class BuildPlannerWidget(QWidget):
                     game = b.get("game", "elden_ring")
                     def _do_cloud_delete(cid=cloud_id, g=game):
                         try:
-                            from core.questlog_sync import QuestLogSync, BASE_URL
-                            import requests
-                            r = requests.delete(
-                                f"{BASE_URL}/api/soulslike/desktop/builds/{cid}/",
+                            from core.questlog_sync import BASE_URL
+                            r = _http.post(
+                                f"{BASE_URL}/api/soulslike/desktop/builds/{cid}/delete/",
                                 headers={"X-Listener-Key": self._api_key},
                                 params={"game": g},
                                 timeout=10,
                             )
                             log.info("Cloud delete build %s → %d", cid, r.status_code)
+                            if r.ok:
+                                self.cloud_build_changed.emit()
                         except Exception as e:
                             log.warning("Cloud delete failed: %s", e)
                     threading.Thread(target=_do_cloud_delete, daemon=True).start()
@@ -3461,13 +4640,24 @@ class BuildPlannerWidget(QWidget):
         col.setSpacing(2)
         name_lbl = QLabel(build.get("name", "Build"))
         name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
-        game = build.get("game", "elden_ring").replace("_", " ").title()
+        game = (build.get("game") or "elden_ring").replace("_", " ").title()
         lvl  = build.get("level", "?")
         sub  = QLabel(f"{game}  ·  Lv {lvl}")
         sub.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px; background: transparent;")
         col.addWidget(name_lbl)
         col.addWidget(sub)
         cl.addLayout(col, 1)
+
+        is_synced = bool(build.get("cloud_id"))
+        sync_badge = QLabel("QL" if is_synced else "LOCAL")
+        sync_badge.setStyleSheet(
+            f"font-size: 8px; font-weight: 700; letter-spacing: 1px; border-radius: 3px; padding: 1px 4px; background: transparent;"
+            + (f"color: {ACCENT_GOLD}; border: 1px solid {ACCENT_GOLD};" if is_synced
+               else f"color: {TEXT_DIM}; border: 1px solid {TEXT_DIM};")
+        )
+        sync_badge.setToolTip("Synced to QuestLog" if is_synced else "Saved locally only")
+        cl.addWidget(sync_badge)
+
         del_btn = QToolButton()
         del_btn.setText("×")
         del_btn.setFixedSize(20, 20)
@@ -3481,6 +4671,8 @@ class BuildPlannerWidget(QWidget):
     # ── Start run from build ──────────────────────────────────────────────────
 
     def _request_start_run(self):
+        if not self._require_class():
+            return
         self.start_run_requested.emit(dict(self._build))
 
     # ── Public API ────────────────────────────────────────────────────────────

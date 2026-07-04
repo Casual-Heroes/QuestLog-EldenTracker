@@ -13,7 +13,7 @@ LOGO_QL  = _assets_path("QL1.png")
 LOGO_CH  = _assets_path("CH.png")
 ICO_CH   = _assets_path("CH.ico")
 SITE_URL   = "https://questlog.casual-heroes.com"
-GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-MortalityTracker"
+GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 
 from core.run import list_runs, create_run, delete_run, load_run_meta
 from games.registry import list_games
@@ -147,7 +147,7 @@ class RunCard(QWidget):
 
 
 class NewRunPanel(QWidget):
-    run_created = pyqtSignal(str)
+    run_created = pyqtSignal(str)   # slug
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,6 +182,11 @@ class NewRunPanel(QWidget):
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
 
+        # ── Optional build link ───────────────────────────────────────────────
+        self.build_combo = QComboBox()
+        self._refresh_builds()
+        layout.addWidget(self.build_combo)
+
         local_row = QHBoxLayout()
         local_row.setSpacing(8)
         self.local_check = QCheckBox()
@@ -213,6 +218,13 @@ class NewRunPanel(QWidget):
         create_btn.clicked.connect(self._create)
         layout.addWidget(create_btn)
 
+    def _refresh_builds(self):
+        from core.local_run_data import list_local_builds
+        self.build_combo.clear()
+        self.build_combo.addItem("No build linked", None)
+        for name, path in list_local_builds():
+            self.build_combo.addItem(name, path)
+
     def _on_game_changed(self):
         self._populate_modes()
 
@@ -238,9 +250,11 @@ class NewRunPanel(QWidget):
         mode_id = self.mode_combo.currentData()
         if not name or not game_id or not mode_id:
             return
-        # local_only=True: store a marker so the run is never matched to a server run
         local_only = self.local_check.isChecked()
-        slug = create_run(name, game_id, mode_id, questlog_token="__local__" if local_only else None)
+        build_path = self.build_combo.currentData() or ""
+        slug = create_run(name, game_id, mode_id,
+                          questlog_token="__local__" if local_only else None,
+                          build_path=build_path)
         self.local_check.setChecked(False)
         self.name_input.clear()
         self.run_created.emit(slug)
@@ -311,11 +325,12 @@ class ServerRunCard(QWidget):
 
         manage_url = run.get("manage_url") or f"https://questlog.casual-heroes.com/soulslike/runs/{token}/"
         overlay_btn = QPushButton("OVERLAYS [web]")
-        overlay_btn.setFixedSize(100, 22)
+        overlay_btn.setFixedSize(120, 22)
         overlay_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; border: none;
-                color: {TEXT_MUTED}; font-size: 9px; letter-spacing: 0.5px;
+                color: {TEXT_MUTED}; font-size: 9px; letter-spacing: 0px;
+                text-align: center;
             }}
             QPushButton:hover {{ color: {ACCENT_GOLD}; }}
         """)
@@ -348,8 +363,13 @@ class RunSelectorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(QSS)
-        self._server_active  = []  # active_runs from last profile fetch
-        self._server_history = []  # run_history from last profile fetch
+        self.setAutoFillBackground(True)
+        from PyQt6.QtGui import QPalette, QColor
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(BG_BASE))
+        self.setPalette(pal)
+        self._server_active  = []  # active runs from last profile fetch
+        self._server_history = []  # run history from last profile fetch
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -452,10 +472,16 @@ class RunSelectorWidget(QWidget):
 
         # ── Body ──────────────────────────────────────────────
         body = QWidget()
+        body.setAutoFillBackground(True)
+        from PyQt6.QtGui import QPalette as _QPalette, QColor as _QColor
+        from PyQt6.QtWidgets import QSizePolicy as _QSP
+        _pal = body.palette()
+        _pal.setColor(_QPalette.ColorRole.Window, _QColor(BG_BASE))
+        body.setPalette(_pal)
+        body.setSizePolicy(_QSP.Policy.Expanding, _QSP.Policy.Expanding)
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(32, 32, 32, 32)
         body_layout.setSpacing(32)
-        body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         left = QVBoxLayout()
         left.setSpacing(12)
@@ -475,11 +501,12 @@ class RunSelectorWidget(QWidget):
         self._list_layout.addStretch()
         scroll.setWidget(self._list_container)
         scroll.setMinimumWidth(340)
+        from PyQt6.QtWidgets import QSizePolicy as _QSP2
+        scroll.setSizePolicy(_QSP2.Policy.Expanding, _QSP2.Policy.Expanding)
         left.addWidget(scroll, 1)
 
         right = QVBoxLayout()
         right.setSpacing(12)
-        right.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         new_lbl = QLabel("START SOMETHING NEW")
         new_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
@@ -546,13 +573,35 @@ class RunSelectorWidget(QWidget):
                 item.widget().deleteLater()
 
         local_runs = list_runs()
-        # Build set of tokens already represented by local stubs so we don't double-show
-        local_tokens = {m.get("questlog_token") for m in local_runs if m.get("questlog_token")}
 
-        # Server active runs first (not already a local stub)
+        # Tokens of local stubs that are already linked to a server run
+        local_tokens = {
+            m.get("questlog_token") for m in local_runs
+            if m.get("questlog_token") and m.get("questlog_token") != "__local__"
+        }
+
+        # Names of local runs that have NO server token — used to suppress the
+        # server card when a same-named local stub exists (avoids duplicate rows
+        # when START RUN created the local stub before create_session returned a token)
+        _MODE_REMAP = {"reforged": "err", "vanilla": "elden_ring"}
+        local_unlinked_names = {
+            (m.get("name", "").strip().lower(),
+             _MODE_REMAP.get(m.get("mode_id", ""), m.get("game_id", "")))
+            for m in local_runs
+            if not m.get("questlog_token") or m.get("questlog_token") == "__local__"
+        }
+
+        def _server_key(run):
+            name = (run.get("build_name") or run.get("name", "")).strip().lower()
+            game = run.get("game", "")
+            return (name, game)
+
+        # Server active runs first — skip if already represented locally
         i = 0
         for run in self._server_active:
             if run.get("token") in local_tokens:
+                continue
+            if _server_key(run) in local_unlinked_names:
                 continue
             card = ServerRunCard(run, is_active=True)
             card.connect_requested.connect(self.server_run_connect.emit)
@@ -564,15 +613,6 @@ class RunSelectorWidget(QWidget):
             card = RunCard(meta)
             card.selected.connect(self.run_selected.emit)
             card.deleted.connect(self._on_delete)
-            self._list_layout.insertWidget(i, card)
-            i += 1
-
-        # Server history runs (not already local)
-        for run in self._server_history:
-            if run.get("token") in local_tokens:
-                continue
-            card = ServerRunCard(run, is_active=False)
-            card.connect_requested.connect(self.server_run_connect.emit)
             self._list_layout.insertWidget(i, card)
             i += 1
 

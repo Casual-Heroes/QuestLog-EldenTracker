@@ -91,14 +91,27 @@ class DeathTracker:
             self._death_times.popleft()
 
     def deaths_per_hour(self):
-        self._prune_window()
-        count = len(self._death_times)
-        if count == 0:
-            return 0.0
-        window_secs = min(self.session.elapsed_seconds(), ROLLING_WINDOW_SECS)
-        if window_secs < 1:
-            return 0.0
-        return round(count / window_secs * 3600, 1)
+        """
+        Returns float rate or None if under the 10-minute threshold.
+        None means the caller should display '--'.
+        """
+        session_secs = self.session.elapsed_seconds()
+        if session_secs < 600:
+            return None
+        session_hrs = session_secs / 3600
+        return round(self.session.session_deaths / session_hrs, 1)
+
+    def seconds_until_rate_shows(self):
+        """Seconds remaining before Deaths/HR becomes meaningful. 0 when active."""
+        return max(0, 600 - int(self.session.elapsed_seconds()))
+
+    def on_new_session_detected(self):
+        """Call when server signals a new sitting (session_deaths reset to 0 after grace)."""
+        self._death_times.clear()
+        self._last_death_time = None
+        self._consecutive     = 0
+        self._rage_pct        = 0.0
+        self._hollow_streak   = 0
 
     def update_rage_decay(self):
         if self._rage_pct <= 0 or self._hollow_streak > 0:

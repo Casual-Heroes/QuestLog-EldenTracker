@@ -19,6 +19,21 @@ ROLL_THRESHOLDS = [
     (0.999, 'Heavy Roll'),
 ]
 
+# ── ERR equip load constants ───────────────────────────────────────────────────
+
+FORTUNE_EQ_MULTS = {
+    'Sentinel':  1.08,
+    'Barbarian': 0.84,
+    'Dynasts':   0.85,
+}
+
+FRAME_COLORS = {
+    'Nimble Frame':   '#60a5fa',
+    'Balanced Frame': '#4ade80',
+    'Solid Frame':    '#facc15',
+    'Massive Frame':  '#f87171',
+}
+
 
 # ── ER piecewise formulas ──────────────────────────────────────────────────────
 
@@ -50,6 +65,36 @@ def calc_equip_load(end):
     return             round(120.0 + (end - 60) * (40.0 / 39), 1)
 
 
+def calc_equip_load_err(fortune_name: str, rune_inventory: list) -> float:
+    """ERR equip load. Base = 100. Endurance has no effect."""
+    fortune_mult = FORTUNE_EQ_MULTS.get(fortune_name or '', 1.0)
+    leonine = next((r for r in rune_inventory if r.get('name') == 'Leonine Weight'), None)
+    rune_mult = (1.004 ** leonine['copies']) if leonine and leonine.get('copies') else 1.0
+    return round(100.0 * fortune_mult * rune_mult, 1)
+
+
+def calc_total_weight_err(slots: dict) -> float:
+    """ERR weapon weight: heaviest RH + heaviest LH only. All 4 armor slots count fully."""
+    def _w(slot_val):
+        return (slot_val or {}).get('weight', 0) or 0
+    rh    = max(_w(slots.get(s)) for s in ('rh1', 'rh2', 'rh3'))
+    lh    = max(_w(slots.get(s)) for s in ('lh1', 'lh2', 'lh3'))
+    armor = sum(_w(slots.get(s)) for s in ('helm', 'chest', 'gauntlet', 'leg'))
+    return round(rh + lh + armor, 1)
+
+
+def get_frame_type_err(total_weight: float, max_equip_load: float, fortune_name: str) -> str:
+    if fortune_name == 'Bulwark':
+        return 'Massive Frame'
+    if max_equip_load <= 0:
+        return 'Massive Frame'
+    ratio = total_weight / max_equip_load
+    if ratio < 0.333:  return 'Nimble Frame'
+    if ratio < 0.666:  return 'Balanced Frame'
+    if ratio < 1.0:    return 'Solid Frame'
+    return 'Massive Frame'
+
+
 def rune_cost_to_level_er(level):
     """Runes required to gain one level at `level` (ER formula)."""
     L = (level + 1) + 81
@@ -77,28 +122,126 @@ def rune_cost_to_level_err(level, curves):
 
 # ── Unified interface ──────────────────────────────────────────────────────────
 
-def get_derived(stats, game, err_curves=None):
+# ── ERR Fortune tables ────────────────────────────────────────────────────────
+
+# Flat stat bonuses applied BEFORE calculating HP/FP/Stamina. Cap at 99.
+FORTUNE_STAT_BONUSES = {
+    "Spellsword":  {"mind": 6},
+    "Adherent":    {"faith": 2},
+    "Apothecary":  {"arcane": 3},
+    "Heretic":     {"vigor": -3},
+    "Sage":        {"vigor": -1},
+    "Sentinel":    {"arcane": -3},
+    "Brave":       {"vigor": 2, "endurance": 2},
+    "Bulwark":     {"endurance": 6},
+    "Godslayers":  {"dexterity": 2},
+    "Houses":      {"strength": -3, "dexterity": -3, "intelligence": 2, "faith": 2},
+    "Warmaster":   {"strength": 1, "dexterity": 1},
+}
+
+# ── Binding rune derived-stat multipliers ────────────────────────────────────────
+# Compound per copy: N copies of base = base^N (not base*N).
+# Applied AFTER fortune multipliers. Use int() (floor) on final result.
+RUNE_DERIVED_MULTS = {
+    'Cursed Health':   {'hp':      1.006},
+    'Cradled Focus':   {'fp':      1.007},
+    'Leonine Stamina': {'stamina': 1.008},
+    'Leonine Weight':  {'eqload':  1.004},
+}
+
+
+def calc_rune_derived_mults(rune_inventory: list) -> dict:
+    result = {'hp': 1.0, 'fp': 1.0, 'stamina': 1.0, 'eqload': 1.0}
+    for rune in rune_inventory:
+        name   = rune.get('name', '')
+        copies = rune.get('copies', 0)
+        m = RUNE_DERIVED_MULTS.get(name)
+        if not m or not copies:
+            continue
+        for key, base in m.items():
+            result[key] *= base ** copies
+    return result
+
+
+# Multipliers applied AFTER deriving HP/FP/Stamina from effective stats. Use floor().
+FORTUNE_MULTIPLIERS = {
+    "Bold":      {"hp": 1.05,  "fp": 0.94},
+    "Cunning":   {"hp": 0.95,  "stamina": 1.12},
+    "Wise":      {"fp": 1.085, "stamina": 0.93},
+    "Assassin":  {"hp": 0.91},
+    "Barbarian": {"fp": 0.9,   "stamina": 1.15},
+    "Cleric":    {"hp": 1.1,   "stamina": 0.85},
+    "Dancer":    {"fp": 0.65},
+    "Sage":      {"fp": 1.1},
+    "Veteran":   {"hp": 1.02,  "fp": 1.03, "stamina": 1.04},
+    "Haima":     {"fp": 0.8},
+    "Latenna":   {"fp": 1.1},
+    "Sorcerer":  {"stamina": 0.95},
+}
+
+
+def apply_fortune_stat_bonuses(stats: dict, fortune_name: str) -> dict:
+    """
+    Return a new stats dict with Fortune flat bonuses applied, capped at 99.
+    Does not mutate the input.
+    """
+    bonuses = FORTUNE_STAT_BONUSES.get(fortune_name, {})
+    if not bonuses:
+        return stats
+    result = dict(stats)
+    for stat, delta in bonuses.items():
+        result[stat] = min(99, max(1, result.get(stat, 1) + delta))
+    return result
+
+
+def apply_fortune_multipliers(derived: dict, fortune_name: str) -> dict:
+    """
+    Return a new derived dict with Fortune HP/FP/Stamina multipliers applied (floor).
+    Does not mutate the input.
+    """
+    mults = FORTUNE_MULTIPLIERS.get(fortune_name, {})
+    if not mults:
+        return derived
+    result = dict(derived)
+    for key, factor in mults.items():
+        if key in result:
+            result[key] = floor(result[key] * factor)
+    return result
+
+
+def get_derived(stats, game, err_curves=None, fortune_name=None):
     """
     Return {'hp', 'fp', 'stamina', 'equip_load'} for any game.
     err_curves: dict from /api/soulslike/derived-curves/?game=err (required if game='err')
+    fortune_name: ERR Fortune name — applies stat bonuses then HP/FP/Stamina multipliers.
     """
-    end = stats['endurance']
-    vig = stats['vigor']
-    mnd = stats['mind']
+    effective_stats = stats
+    if game == 'err' and fortune_name:
+        effective_stats = apply_fortune_stat_bonuses(stats, fortune_name)
+
+    end = effective_stats['endurance']
+    vig = effective_stats['vigor']
+    mnd = effective_stats['mind']
 
     if game == 'err' and err_curves:
-        return {
+        derived = {
             'hp':         calc_hp_err(vig, err_curves),
             'fp':         calc_fp_err(mnd, err_curves),
             'stamina':    calc_stamina_err(end, err_curves),
-            'equip_load': calc_equip_load(end),   # ERR reuses ER equip load formula
+            'equip_load': calc_equip_load(end),
         }
-    return {
-        'hp':         calc_hp(vig),
-        'fp':         calc_fp(mnd),
-        'stamina':    calc_stamina(end),
-        'equip_load': calc_equip_load(end),
-    }
+    else:
+        derived = {
+            'hp':         calc_hp(vig),
+            'fp':         calc_fp(mnd),
+            'stamina':    calc_stamina(end),
+            'equip_load': calc_equip_load(end),
+        }
+
+    if game == 'err' and fortune_name:
+        derived = apply_fortune_multipliers(derived, fortune_name)
+
+    return derived
 
 
 def get_roll_type(total_weight, equip_load):

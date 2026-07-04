@@ -18,14 +18,43 @@ log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
 
+# ── Game process registry ─────────────────────────────────────────────────────
+# Add new games here. Key = game_id used by the API, value = set of exe names
+# (all lowercase). Multiple exes per game handles vanilla + mod launchers.
+GAME_PROCESSES = {
+    "elden_ring": {"eldenring.exe"},
+    "err":        {"eldenring.exe", "regulation-reforged.exe"},
+    "remnant2":   {"remnant2.exe"},
+}
+
+# Flat set of all known exes for quick membership check
+_ALL_GAME_EXES = {exe for exes in GAME_PROCESSES.values() for exe in exes}
+
+
+def _is_game_running(game_id: str = None) -> bool:
+    """
+    Return True if a game process is running.
+    If game_id is given, only checks that game's exes.
+    Otherwise checks all known game exes.
+    """
+    try:
+        import psutil
+        exes = GAME_PROCESSES.get(game_id, _ALL_GAME_EXES) if game_id else _ALL_GAME_EXES
+        return any(p.name().lower() in exes for p in psutil.process_iter(["name"]))
+    except Exception:
+        return False
+
 
 class QuestLogSync:
-    def __init__(self, session_token, api_key=None, on_server_sync=None):
+    def __init__(self, session_token, api_key=None, on_server_sync=None, game_id=None):
         self.token           = session_token
         self.api_key         = api_key
-        self.running         = False
+        self._game_id        = game_id   # used to scope process detection
+        self._stop_event     = threading.Event()
         self._on_server_sync = on_server_sync  # callback(dict) — runs on bg thread
         self._http           = requests.Session()
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
+        self._http.verify    = True
         self._lock           = threading.Lock()
 
         self._session_sec        = 0.0
@@ -36,6 +65,14 @@ class QuestLogSync:
         self._life_start_ts      = None   # when current life began (after last death / start)
         self._total_survival_sec = 0.0    # cumulative alive time across all lives this session
         self._current_boss       = ""     # boss currently being fought (for death attribution)
+        self._cached_items         = []     # last items list from status poll
+        self._cached_deaths        = []     # last recent_deaths list from status poll
+        self._items_total          = 0
+        self._items_collected      = 0
+        self._local_session_deaths = -1    # tracks server session_deaths for new-session detection
+        self._game_active          = False  # True only when game EXE is detected running
+        self._paused_streak_sec    = 0      # streak seconds banked when game stopped
+        self._paused_survival_sec  = 0.0   # survival seconds banked when game stopped
 
     def _url(self, path):
         return f"{BASE_URL}/api/soulslike/session/{self.token}/{path}"
@@ -45,33 +82,51 @@ class QuestLogSync:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    @property
+    def running(self):
+        return not self._stop_event.is_set()
+
     def start(self):
         now = time.time()
         with self._lock:
             self._last_tick     = now
             self._last_death_ts = now
             self._life_start_ts = now
-        self.running = True
+        self._stop_event.clear()
         log.info("QuestLogSync starting — token=%s", self.token[:12] if self.token else "none")
         threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
-        self.running = False
+        self._stop_event.set()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def _loop(self):
         log.info("Heartbeat loop started — token=%s", self.token[:12] if self.token else "none")
         _status_counter = 0
-        while self.running:
+        while not self._stop_event.is_set():
             try:
                 now = time.time()
+                game_running = _is_game_running(self._game_id)
                 with self._lock:
                     delta = now - self._last_tick
                     self._last_tick = now
-                    self._session_sec += delta
+                    if game_running:
+                        self._session_sec += delta
+                        if not self._game_active:
+                            # Game just started — resume life clock from now
+                            self._life_start_ts = now
+                        self._game_active = True
+                    else:
+                        if self._game_active:
+                            # Game just stopped — bank streak + survival, freeze clocks
+                            if self._life_start_ts:
+                                self._paused_streak_sec   = int(now - self._life_start_ts)
+                                self._paused_survival_sec = self._total_survival_sec + (now - self._life_start_ts)
+                            self._life_start_ts = None
+                            self._game_active   = False
 
-                self._heartbeat(game_running=True)
+                self._heartbeat(game_running=game_running)
 
                 # Status poll every 3rd tick (~6s) — detect web-side resets/undos
                 _status_counter += 1
@@ -90,34 +145,50 @@ class QuestLogSync:
             if sr.status_code != 200:
                 return
             data = sr.json()
-            server_deaths = data.get("deaths", 0)
+
+            # Cache items + deaths for UI accessors
             with self._lock:
-                local = self._local_deaths
-            if server_deaths != local:
-                log.info("Deaths drift: server=%d local=%d — syncing", server_deaths, local)
+                self._cached_items    = data.get("items", [])
+                self._cached_deaths   = data.get("recent_deaths", [])
+                self._items_total     = data.get("total", 0)
+                self._items_collected = data.get("collected", 0)
+
+            server_deaths         = data.get("deaths", 0)
+            server_session_deaths = data.get("session_deaths", -1)
+            with self._lock:
+                local         = self._local_deaths
+                local_session = self._local_session_deaths
+            new_session = server_session_deaths == 0 and local_session > 0
+            if server_deaths != local or new_session:
+                log.info("Deaths drift or new session: server=%d local=%d server_sess=%d local_sess=%d",
+                         server_deaths, local, server_session_deaths, local_session)
                 with self._lock:
-                    self._local_deaths = server_deaths
-                    if server_deaths == 0:
+                    self._local_deaths         = server_deaths
+                    self._local_session_deaths = server_session_deaths if server_session_deaths >= 0 else 0
+                    if server_deaths == 0 or new_session:
                         self._reset_timers(time.time())
                 if self._on_server_sync:
                     self._on_server_sync({
-                        "deaths":    server_deaths,
-                        "rage_pct":  data.get("rage_pct", 0),
-                        "rage_name": data.get("rage_name", "Maiden's Grace"),
-                        "reset":     server_deaths == 0,
+                        "deaths":         server_deaths,
+                        "rage_pct":       data.get("rage_pct", 0),
+                        "rage_name":      data.get("rage_name", "Maiden's Grace"),
+                        "reset":          server_deaths == 0,
+                        "session_deaths": server_session_deaths,
                     })
         except Exception as e:
             log.debug("Status poll failed: %s", e)
 
     def _reset_timers(self, now):
         """Zero all timing state. Must be called with lock held."""
-        self._session_sec        = 0.0
-        self._last_death_ts      = now
-        self._longest_life       = 0.0
-        self._last_tick          = now
-        self._life_start_ts      = now
-        self._total_survival_sec = 0.0
-        self._local_deaths       = 0
+        self._session_sec         = 0.0
+        self._last_death_ts       = now
+        self._longest_life        = 0.0
+        self._last_tick           = now
+        self._life_start_ts       = now if self._game_active else None
+        self._total_survival_sec  = 0.0
+        self._local_deaths        = 0
+        self._paused_streak_sec   = 0
+        self._paused_survival_sec = 0.0
 
     # ── Heartbeat / push ──────────────────────────────────────────────────────
 
@@ -186,17 +257,59 @@ class QuestLogSync:
 
     def current_streak_sec(self):
         with self._lock:
-            if self._life_start_ts is None:
-                return 0
+            if not self._game_active or self._life_start_ts is None:
+                return self._paused_streak_sec
             return int(time.time() - self._life_start_ts)
 
     def longest_life_sec(self):
         with self._lock:
             return int(self._longest_life)
 
+    def current_survival_sec(self):
+        with self._lock:
+            if not self._game_active or self._life_start_ts is None:
+                return int(self._paused_survival_sec)
+            return int(self._total_survival_sec + (time.time() - self._life_start_ts))
+
+    def get_items(self):
+        with self._lock:
+            return list(self._cached_items), self._items_collected, self._items_total
+
+    def get_recent_deaths(self):
+        with self._lock:
+            return list(self._cached_deaths)
+
+    def collect_item(self, item_name, on_done=None):
+        def _do():
+            try:
+                r = self._http.post(
+                    self._url("collect/"),
+                    json={"item_name": item_name, "method": "app"},
+                    headers=self._headers(), timeout=5,
+                )
+                if r.ok and on_done:
+                    on_done(r.json())
+            except Exception as e:
+                log.warning("collect_item failed: %s", e)
+        threading.Thread(target=_do, daemon=True).start()
+
+    def uncollect_item(self, item_name, on_done=None):
+        def _do():
+            try:
+                r = self._http.post(
+                    self._url("uncollect/"),
+                    json={"item_name": item_name},
+                    headers=self._headers(), timeout=5,
+                )
+                if r.ok and on_done:
+                    on_done(r.json())
+            except Exception as e:
+                log.warning("uncollect_item failed: %s", e)
+        threading.Thread(target=_do, daemon=True).start()
+
     # ── Event hooks ───────────────────────────────────────────────────────────
 
-    def on_death(self, boss=""):
+    def on_death(self, boss="", on_death_response=None):
         now = time.time()
         with self._lock:
             if self._life_start_ts:
@@ -207,7 +320,9 @@ class QuestLogSync:
             self._life_start_ts = now
             self._last_death_ts = now
             self._local_deaths += 1
-        threading.Thread(target=self._post_death_immediate, args=(boss,), daemon=True).start()
+        threading.Thread(
+            target=self._post_death_immediate, args=(boss, on_death_response), daemon=True
+        ).start()
 
     def on_subtract(self):
         with self._lock:
@@ -302,13 +417,23 @@ class QuestLogSync:
 
     def save_build(self, build_data: dict, game='elden_ring'):
         try:
-            r = self._http.post(
-                f"{BASE_URL}/api/soulslike/desktop/builds/",
-                headers=self._headers(),
-                params={'game': game},
-                json=build_data,
-                timeout=10,
-            )
+            cloud_id = build_data.get("cloud_id") or build_data.get("id")
+            if cloud_id:
+                r = self._http.patch(
+                    f"{BASE_URL}/api/soulslike/desktop/builds/{cloud_id}/",
+                    headers=self._headers(),
+                    params={'game': game},
+                    json=build_data,
+                    timeout=10,
+                )
+            else:
+                r = self._http.post(
+                    f"{BASE_URL}/api/soulslike/desktop/builds/",
+                    headers=self._headers(),
+                    params={'game': game},
+                    json=build_data,
+                    timeout=10,
+                )
             return r.json() if r.ok else None
         except Exception as e:
             log.warning("save_build failed: %s", e)
@@ -316,8 +441,8 @@ class QuestLogSync:
 
     def delete_build(self, build_id: int, game='elden_ring'):
         try:
-            r = self._http.delete(
-                f"{BASE_URL}/api/soulslike/desktop/builds/{build_id}/",
+            r = self._http.post(
+                f"{BASE_URL}/api/soulslike/desktop/builds/{build_id}/delete/",
                 headers=self._headers(),
                 params={'game': game},
                 timeout=10,
@@ -358,12 +483,17 @@ class QuestLogSync:
         except Exception as e:
             log.warning("POST %s failed: %s", path, e)
 
-    def _post_death_immediate(self, boss=""):
+    def _post_death_immediate(self, boss="", on_death_response=None):
         """POST death then immediately push timers with streak=0."""
         try:
-            self._http.post(self._url("death/"),
-                            json={"boss": boss, "source": "app"},
-                            headers=self._headers(), timeout=5)
+            r = self._http.post(self._url("death/"),
+                                json={"boss": boss, "source": "app"},
+                                headers=self._headers(), timeout=5)
+            if r.ok and on_death_response:
+                try:
+                    on_death_response(r.json())
+                except Exception:
+                    pass
         except Exception as e:
             log.warning("Death post failed: %s", e)
         self._push_timers(streak_override=0)

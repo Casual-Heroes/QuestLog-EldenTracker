@@ -8,13 +8,14 @@ STOP_GRACE_SECS = 10
 
 class Session:
     def __init__(self, process_name, run_dir):
-        self._process_name = process_name.lower().replace(".exe", "")
-        self._state_file   = os.path.join(run_dir, "session.json")
-        self.active        = False
-        self.start_time    = time.time()   # always count from run launch, not game detection
-        self.end_time      = None
+        self._process_name  = process_name.lower().replace(".exe", "")
+        self._state_file    = os.path.join(run_dir, "session.json")
+        self.active         = False
+        self.start_time     = None   # set when EXE first detected
+        self.end_time       = None
+        self._elapsed_accum = 0.0   # accumulated seconds from previous active windows
         self.session_deaths = 0
-        self.total_deaths  = self._load_total_deaths()
+        self.total_deaths   = self._load_total_deaths()
         self._missing_since = None
 
     def _load_total_deaths(self):
@@ -42,18 +43,28 @@ class Session:
         self.save()
 
     def reset_session_time(self):
-        self.start_time = time.time()
-        self.end_time   = None
+        self._elapsed_accum = 0.0
+        if self.is_game_running():
+            self.start_time = time.time()
+            self.end_time   = None
+        else:
+            self.active     = False
+            self.start_time = None
+            self.end_time   = None
 
     def stop(self):
+        if self.active and self.start_time:
+            self._elapsed_accum += time.time() - self.start_time
         self.active         = False
+        self.start_time     = None
         self.end_time       = time.time()
         self._missing_since = None
         self.save()
 
     def elapsed_seconds(self):
-        end = self.end_time if self.end_time else time.time()
-        return end - self.start_time
+        if self.active and self.start_time:
+            return self._elapsed_accum + (time.time() - self.start_time)
+        return self._elapsed_accum
 
     def elapsed_str(self):
         secs = int(self.elapsed_seconds())
@@ -79,6 +90,7 @@ class Session:
             if not self.active:
                 self.active         = True
                 self.start_time     = time.time()
+                self._elapsed_accum = 0.0
                 self.session_deaths = 0
                 self.save()
                 return True
