@@ -96,14 +96,14 @@ class DeathTracker:
         None means the caller should display '--'.
         """
         session_secs = self.session.elapsed_seconds()
-        if session_secs < 600:
+        if session_secs < 180:
             return None
         session_hrs = session_secs / 3600
         return round(self.session.session_deaths / session_hrs, 1)
 
     def seconds_until_rate_shows(self):
         """Seconds remaining before Deaths/HR becomes meaningful. 0 when active."""
-        return max(0, 600 - int(self.session.elapsed_seconds()))
+        return max(0, 180 - int(self.session.elapsed_seconds()))
 
     def on_new_session_detected(self):
         """Call when server signals a new sitting (session_deaths reset to 0 after grace)."""

@@ -165,8 +165,13 @@ class QuestLogSync:
                 with self._lock:
                     self._local_deaths         = server_deaths
                     self._local_session_deaths = server_session_deaths if server_session_deaths >= 0 else 0
-                    if server_deaths == 0 or new_session:
-                        self._reset_timers(time.time())
+                    now = time.time()
+                    if server_deaths == 0:
+                        # Full reset from server -- zero everything
+                        self._reset_timers(now)
+                    elif new_session:
+                        # Grace expired -- reset session stats only, keep longest_life
+                        self._reset_session_timers(now)
                 if self._on_server_sync:
                     self._on_server_sync({
                         "deaths":         server_deaths,
@@ -178,17 +183,22 @@ class QuestLogSync:
         except Exception as e:
             log.debug("Status poll failed: %s", e)
 
+    def _reset_session_timers(self, now):
+        """Reset session-scoped stats only. Keeps run-scoped longest_life. Lock must be held."""
+        self._session_sec          = 0.0
+        self._last_death_ts        = now
+        self._last_tick            = now
+        self._life_start_ts        = now if self._game_active else None
+        self._total_survival_sec   = 0.0
+        self._local_session_deaths = 0
+        self._paused_streak_sec    = 0
+        self._paused_survival_sec  = 0.0
+
     def _reset_timers(self, now):
-        """Zero all timing state. Must be called with lock held."""
-        self._session_sec         = 0.0
-        self._last_death_ts       = now
-        self._longest_life        = 0.0
-        self._last_tick           = now
-        self._life_start_ts       = now if self._game_active else None
-        self._total_survival_sec  = 0.0
-        self._local_deaths        = 0
-        self._paused_streak_sec   = 0
-        self._paused_survival_sec = 0.0
+        """Full reset -- zeros everything including run-scoped longest_life. Lock must be held."""
+        self._reset_session_timers(now)
+        self._longest_life         = 0.0
+        self._local_deaths         = 0
 
     # ── Heartbeat / push ──────────────────────────────────────────────────────
 
@@ -200,8 +210,9 @@ class QuestLogSync:
                 life_start       = self._life_start_ts
                 total_surv       = self._total_survival_sec
             now = time.time()
-            streak_sec   = int(now - life_start) if life_start else 0
-            survival_sec = int(total_surv + (now - life_start if life_start else 0))
+            raw_streak   = int(now - life_start) if life_start else 0
+            streak_sec   = min(raw_streak, self._MAX_LIFE_SEC)
+            survival_sec = int(total_surv + min(now - life_start if life_start else 0, self._MAX_LIFE_SEC))
             self._http.post(
                 self._url("heartbeat/"),
                 json={
@@ -309,11 +320,14 @@ class QuestLogSync:
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
+    _MAX_LIFE_SEC = 43200  # 12h sanity cap — guards against stale timestamps
+
     def on_death(self, boss="", on_death_response=None):
         now = time.time()
         with self._lock:
             if self._life_start_ts:
-                life_dur = now - self._life_start_ts
+                raw_dur  = now - self._life_start_ts
+                life_dur = min(raw_dur, self._MAX_LIFE_SEC)
                 self._total_survival_sec += life_dur
                 if life_dur > self._longest_life:
                     self._longest_life = life_dur

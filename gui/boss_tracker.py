@@ -225,8 +225,6 @@ class BossRow(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         pass
-        # Keep toggled signal alive for refresh() callers
-        self.toggled.emit(self.key, next_state == "defeated")
 
     def set_state(self, state):
         self._state   = state
