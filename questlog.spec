@@ -39,7 +39,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='QuestLog',
+    name='EldenTracker',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -60,12 +60,12 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='QuestLog',
+    name='EldenTracker',
 )
 
 # Copy data folders next to the exe (not into _internal)
 # core/paths.py looks for these relative to sys.executable
-_dist = os.path.join(DISTPATH, 'QuestLog')
+_dist = os.path.join(DISTPATH, 'EldenTracker')
 for _folder in ('overlay', 'games', 'assets'):
     _src = os.path.join(SPECPATH, _folder)
     _dst = os.path.join(_dist, _folder)

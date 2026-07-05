@@ -456,10 +456,10 @@ class RunSelectorWidget(QWidget):
         settings_btn.clicked.connect(self.settings_requested.emit)
         h_layout.addWidget(settings_btn)
 
-        site_btn = QPushButton("QL Site")
+        site_btn = QPushButton("Soulslike Hub")
         site_btn.setStyleSheet(_btn_style)
         site_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        site_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SITE_URL)))
+        site_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SITE_URL + "/soulslike/")))
         h_layout.addWidget(site_btn)
 
         github_btn = QPushButton("GitHub")

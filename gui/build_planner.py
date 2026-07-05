@@ -2688,6 +2688,7 @@ class BuildPlannerWidget(QWidget):
     """
     start_run_requested = pyqtSignal(dict)
     cloud_build_changed = pyqtSignal()
+    builds_synced       = pyqtSignal()   # emitted after cloud builds written to disk
 
     def __init__(self, api_key=None, parent=None):
         super().__init__(parent)
@@ -2870,6 +2871,7 @@ class BuildPlannerWidget(QWidget):
                 self._synced_cloud_ids.add(cloud_id)
         if changed:
             self._refresh_saved_builds()
+            self.builds_synced.emit()
 
     def _normalise_cloud_build(self, cb: dict) -> dict:
         """Convert profile API build dict into local build dict."""

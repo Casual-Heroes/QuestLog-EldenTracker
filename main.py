@@ -152,6 +152,9 @@ class App:
         self._selector_win._widget.settings_requested.connect(self._open_settings)
         self._build_planner = self._selector_win._build_planner
         self._build_planner.cloud_build_changed.connect(self._on_cloud_build_changed)
+        self._build_planner.builds_synced.connect(
+            self._selector_win._widget.new_panel._refresh_builds
+        )
         self._tracker      = None
         self._tracker_was_maximized = False   # captured at show time, not close time
         self._tracker_geo  = None             # captured at show time for restore
@@ -778,6 +781,9 @@ class App:
         tab.hotkeys_changed.connect(lambda hk: _save_settings({**_load_settings(), **hk}))
         tab.login_requested.connect(self._do_login)
         tab.logout_requested.connect(self._do_logout)
+        # If already logged in this session, reflect that immediately
+        if self._api and saved.get("username"):
+            tab._set_logged_in(saved["username"])
         layout.addWidget(tab)
         dlg.exec()
 
@@ -875,9 +881,16 @@ class App:
             self._build_poller.force_refresh()
 
     def _do_logout(self):
+        from gui.boss_tracker import _load_settings, _save_settings
+        s = _load_settings()
+        s["api_key"] = ""
+        s["session_token"] = ""
+        s["username"] = ""
+        _save_settings(s)
         self._api = None
         if self._tracker:
             self._tracker._api = None
+        self._selector_win._widget.set_logged_out()
         if self._build_poller:
             self._build_poller.stop()
             self._build_poller = None

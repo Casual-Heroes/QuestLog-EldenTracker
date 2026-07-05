@@ -1500,12 +1500,8 @@ class SettingsTab(QWidget):
         self._login_status.setStyleSheet(f"color: {RED_LIVE}; font-size: 11px;")
 
     def _on_logout_clicked(self):
-        self._settings["api_key"]       = ""
-        self._settings["session_token"] = ""
-        self._settings["username"]      = ""
-        _save_settings(self._settings)
         self._set_logged_out()
-        self.logout_requested.emit()
+        self.logout_requested.emit()  # App._do_logout handles clearing disk
 
     def _set_logged_in(self, username):
         self._username_lbl.setText(f"Logged in as  {username}")
