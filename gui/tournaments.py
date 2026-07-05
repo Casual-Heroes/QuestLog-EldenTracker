@@ -52,7 +52,11 @@ class _ActionDone(QObject):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _headers(api_key: str) -> dict:
-    return {"X-Listener-Key": api_key, "Content-Type": "application/json"}
+    return {
+        "X-Listener-Key": api_key,
+        "Content-Type":   "application/json",
+        "X-App-Version":  "1.0.2",
+    }
 
 
 def _cat_label(category: str) -> str:

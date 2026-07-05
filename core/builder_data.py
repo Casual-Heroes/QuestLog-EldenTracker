@@ -80,7 +80,9 @@ class BuilderData:
         try:
             encoded = requests.utils.quote(weapon_name, safe='')
             url = f"{BASE_URL}/api/soulslike/weapons/{encoded}/ar-variants/?game={self.game}"
-            headers = {'X-Listener-Key': api_key} if api_key else {}
+            headers = {"X-App-Version": "1.0.2"}
+            if api_key:
+                headers["X-Listener-Key"] = api_key
             r = requests.get(url, headers=headers, timeout=10)
             if r.ok:
                 variants = r.json().get('variants', [])
@@ -141,7 +143,9 @@ def _get(url, cache_game, cache_key, api_key=None):
 
     import requests
     try:
-        headers = {'X-Listener-Key': api_key} if api_key else {}
+        headers = {"X-App-Version": "1.0.2"}
+        if api_key:
+            headers["X-Listener-Key"] = api_key
         r = requests.get(url, headers=headers, timeout=15)
         if r.ok:
             data = r.json()

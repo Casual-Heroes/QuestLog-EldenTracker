@@ -742,7 +742,10 @@ class App:
             try:
                 r = requests.get(
                     f"{BASE_URL}/api/soulslike/desktop/profile/",
-                    headers={"X-Listener-Key": api_key},
+                    headers={
+                        "X-Listener-Key": api_key,
+                        "X-App-Version":  "1.0.2",
+                    },
                     timeout=REQUEST_TIMEOUT,
                 )
                 log.info("Profile API status=%d", r.status_code)

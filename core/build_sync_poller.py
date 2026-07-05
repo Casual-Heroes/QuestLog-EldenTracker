@@ -117,7 +117,10 @@ class BuildSyncPoller:
                 self.stop()
                 return []
             r.raise_for_status()
-            return r.json().get("builds", [])
+            builds = r.json().get("builds", [])
+            if builds:
+                log.info("_fetch_builds sample keys game=%s: %s", game, list(builds[0].keys()))
+            return builds
         except requests.Timeout:
             log.debug("Build poll timeout game=%s", game)
             return []

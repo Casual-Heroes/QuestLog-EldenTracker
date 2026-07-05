@@ -12,7 +12,10 @@ import requests as _requests
 
 # Shared session so all build API calls reuse the same connection + UA
 _http = _requests.Session()
-_http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0"})
+_http.headers.update({
+    "User-Agent":    "QuestLog-EldenTracker/1.0.2b",
+    "X-App-Version": "1.0.2",
+})
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QLineEdit, QComboBox, QFrame, QSizePolicy,
@@ -2700,6 +2703,7 @@ class BuildPlannerWidget(QWidget):
         self._pending_cloud_builds: list = []   # re-applied after each game's data loads
         self._synced_cloud_ids: set     = set() # cloud IDs already upserted this session
         self._pending_build_load: bool  = False  # True when a game switch is in flight
+        self._full_cloud_builds: dict   = {}    # {cloud_id: raw cb dict} — keeps equipment data from profile
 
         self.setStyleSheet(QSS)
         self._data_bridge    = _DataReady()
@@ -2808,6 +2812,11 @@ class BuildPlannerWidget(QWidget):
             if self._pending_build_load and self._build.get("game") == data.game:
                 self._pending_build_load = False
                 self._load_build(self._build)
+            elif not self._build.get("name"):
+                # No build loaded yet — auto-load the first saved build for this game
+                candidates = [b for b in _list_saved_builds() if b.get("game") == data.game]
+                if candidates:
+                    self._load_build(candidates[0])
         self._recalc()
         self._stack.setCurrentIndex(1)
 
@@ -2815,8 +2824,6 @@ class BuildPlannerWidget(QWidget):
         """Called from main thread when profile API returns builds."""
         if not cloud_builds:
             return
-        # Reset session sync tracking on fresh profile fetch
-        self._synced_cloud_ids.clear()
         # Cache so we can re-apply after each game's data finishes loading
         self._pending_cloud_builds = cloud_builds
         if self._data:
@@ -2833,6 +2840,11 @@ class BuildPlannerWidget(QWidget):
                 continue
             if cloud_id in self._synced_cloud_ids:
                 continue   # already processed this session
+            # If this payload has equipment data, cache it as the authoritative version
+            if cb.get("weapons") or cb.get("armor") or cb.get("talismans"):
+                self._full_cloud_builds[cloud_id] = cb
+            # Prefer the cached full version over a metadata-only payload from the poller
+            cb = self._full_cloud_builds.get(cloud_id, cb)
             local = local_by_name.get(name)
             cloud_ts = cb.get("updated_at", 0) or 0
             local_ts = float(local.get("saved_at", 0) or 0) if local else 0
@@ -2854,11 +2866,21 @@ class BuildPlannerWidget(QWidget):
                     or local_rune_copies != cloud_rune_copies
                 )
             )
+            data_ready_for_game = self._data is not None and self._data.game == game
+            # If this cloud build has no equipment data (metadata-only from poller),
+            # don't overwrite a local copy that already has slots populated
+            cb_has_equipment = bool(cb.get("weapons") or cb.get("armor") or cb.get("talismans"))
+            local_has_slots = bool(local and any(local.get("slots", {}).values()))
+            if not cb_has_equipment and local_has_slots:
+                log.info("Cloud sync skip (poller metadata-only, local has slots): %s", name)
+                if cloud_id and data_ready_for_game:
+                    self._synced_cloud_ids.add(cloud_id)
+                continue
             if local is None:
                 normalised = self._normalise_cloud_build(cb)
                 _save_build_local(normalised)
                 changed = True
-                log.info("Cloud sync new: %s (game=%s)", name, game)
+                log.info("Cloud sync new: %s (game=%s data_ready=%s)", name, game, data_ready_for_game)
             elif local_ts > cloud_ts and not local_missing_err_fields and game != "err":
                 # Local is newer and has all the data — keep it (ERR always syncs from cloud)
                 log.info("Cloud sync skip (local newer): %s local_ts=%.0f cloud_ts=%d", name, local_ts, cloud_ts)
@@ -2866,8 +2888,10 @@ class BuildPlannerWidget(QWidget):
                 normalised = self._normalise_cloud_build(cb)
                 _save_build_local(normalised)
                 changed = True
-                log.info("Cloud sync updated: %s (game=%s)", name, game)
-            if cloud_id:
+                log.info("Cloud sync updated: %s (game=%s data_ready=%s equipment=%s)", name, game, data_ready_for_game, cb_has_equipment)
+            # Only mark as fully synced if game data was loaded — otherwise re-sync
+            # when that game's data finishes loading so ID stubs get resolved to full objects
+            if cloud_id and data_ready_for_game:
                 self._synced_cloud_ids.add(cloud_id)
         if changed:
             self._refresh_saved_builds()
@@ -2875,6 +2899,8 @@ class BuildPlannerWidget(QWidget):
 
     def _normalise_cloud_build(self, cb: dict) -> dict:
         """Convert profile API build dict into local build dict."""
+        log.info("_normalise_cloud_build raw: weapons=%r armor=%r talismans=%r",
+                 cb.get("weapons"), cb.get("armor"), cb.get("talismans"))
         _GAME_REMAP = {"reforged": "err", "vanilla": "elden_ring"}
         game = _GAME_REMAP.get(cb.get("game", ""), cb.get("game", "elden_ring"))
         build = _empty_build(game)
@@ -4452,8 +4478,16 @@ class BuildPlannerWidget(QWidget):
                 self._game_combo.setCurrentIndex(idx)
             return
 
+        # Data still loading for the same game — defer until _on_data_ready
+        if self._data is None or self._data.game != game:
+            self._build = dict(build)
+            self._pending_build_load = True
+            return
+
         self._build = dict(build)
         self._build_name_input.setText(build.get("name", ""))
+        log.info("_load_build: name=%r game=%r slots=%r", build.get("name"), game,
+                 {k: v for k, v in (build.get("slots") or {}).items() if v})
 
         # Resolve slot IDs back to full objects if data is loaded
         if self._data:
@@ -4465,9 +4499,13 @@ class BuildPlannerWidget(QWidget):
             for slot in WEAPON_SLOTS + ARMOR_SLOTS + TALI_SLOTS:
                 stub = self._build["slots"].get(slot)
                 if stub and "id" in stub:
-                    full = _lookup[slot].get(stub["id"])
+                    raw_id = stub["id"]
+                    full = _lookup[slot].get(raw_id) or _lookup[slot].get(int(raw_id) if not isinstance(raw_id, int) else raw_id)
                     if full:
                         self._build["slots"][slot] = full
+                    else:
+                        log.warning("slot %s: id=%r (%s) not in lookup (lookup size=%d)",
+                                    slot, raw_id, type(raw_id).__name__, len(_lookup[slot]))
 
         # Resolve class_base from live data (fixes stale all-1s from cloud-normalised saves)
         if self._data and self._build.get("class_id"):

@@ -53,7 +53,10 @@ class QuestLogSync:
         self._stop_event     = threading.Event()
         self._on_server_sync = on_server_sync  # callback(dict) — runs on bg thread
         self._http           = requests.Session()
-        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2b"})
+        self._http.headers.update({
+            "User-Agent":    "QuestLog-EldenTracker/1.0.2b",
+            "X-App-Version": "1.0.2",
+        })
         self._http.verify    = True
         self._lock           = threading.Lock()
 
@@ -78,7 +81,10 @@ class QuestLogSync:
         return f"{BASE_URL}/api/soulslike/session/{self.token}/{path}"
 
     def _headers(self):
-        return {"X-Listener-Key": self.api_key} if self.api_key else {}
+        h = {"X-App-Version": "1.0.2"}
+        if self.api_key:
+            h["X-Listener-Key"] = self.api_key
+        return h
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
