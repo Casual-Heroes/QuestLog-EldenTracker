@@ -2899,8 +2899,6 @@ class BuildPlannerWidget(QWidget):
 
     def _normalise_cloud_build(self, cb: dict) -> dict:
         """Convert profile API build dict into local build dict."""
-        log.info("_normalise_cloud_build raw: weapons=%r armor=%r talismans=%r",
-                 cb.get("weapons"), cb.get("armor"), cb.get("talismans"))
         _GAME_REMAP = {"reforged": "err", "vanilla": "elden_ring"}
         game = _GAME_REMAP.get(cb.get("game", ""), cb.get("game", "elden_ring"))
         build = _empty_build(game)
@@ -4486,8 +4484,6 @@ class BuildPlannerWidget(QWidget):
 
         self._build = dict(build)
         self._build_name_input.setText(build.get("name", ""))
-        log.info("_load_build: name=%r game=%r slots=%r", build.get("name"), game,
-                 {k: v for k, v in (build.get("slots") or {}).items() if v})
 
         # Resolve slot IDs back to full objects if data is loaded
         if self._data:
