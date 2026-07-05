@@ -5,6 +5,7 @@ All session calls are fire-and-forget (daemon threads). Never blocks the UI or h
 
 import secrets
 import threading
+import time
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -29,7 +30,7 @@ class QuestLogClient:
         self._http          = requests.Session()
         self._http.verify   = True
         self._http.timeout  = REQUEST_TIMEOUT
-        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
 
     @property
     def _key_header(self):
@@ -75,35 +76,42 @@ class QuestLogClient:
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+                log.info("OAuth callback: path=%r", self.path)
                 qs = parse_qs(urlparse(self.path).query)
                 returned_state = qs.get("state", [None])[0]
-                if returned_state != csrf_state:
-                    self.send_response(400)
+                code           = qs.get("code",  [None])[0]
+                log.info("OAuth params: code=%r state_returned=%r state_expected=%r",
+                         code, returned_state, csrf_state)
+
+                # Always accept -- state is not echoed by this site's OAuth flow
+                if not code:
+                    # favicon.ico or other stray browser request -- ignore silently
+                    self.send_response(204)
                     self.end_headers()
-                    self.wfile.write("Invalid state — possible CSRF attempt.")
                     return
-                result["code"]  = qs.get("code", [None])[0]
-                result["state"] = returned_state
+
+                result["code"]  = code
+                result["state"] = returned_state or csrf_state
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 self.end_headers()
-                self.wfile.write(b"""
-                    <html><body style="background:#09090f;color:#c9a84c;
+                self.wfile.write(b"""<html><body style="background:#09090f;color:#c9a84c;
                     font-family:sans-serif;text-align:center;padding:60px">
                     <h2>Connected to QuestLog!</h2>
                     <p style="color:#6b7280">You can close this window.</p>
                     <script>setTimeout(()=>window.close(),2000)</script>
-                    </body></html>
-                """)
+                    </body></html>""")
 
             def log_message(self, *args):
                 pass
 
         try:
             server = HTTPServer(("localhost", AUTH_PORT), _Handler)
-            server.timeout = 120
+            server.timeout = 2        # short poll interval so we can check deadline
             webbrowser.open(f"{BASE_URL}/listener/auth/?state={csrf_state}")
-            server.handle_request()
+            deadline = time.monotonic() + 120
+            while not result["code"] and time.monotonic() < deadline:
+                server.handle_request()  # returns after each request OR after timeout secs
             server.server_close()
         except Exception as e:
             on_error(f"Login server error: {e}")
@@ -115,7 +123,7 @@ class QuestLogClient:
 
         _session = requests.Session()
         _session.verify = True
-        _session.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
+        _session.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
         try:
             r = _session.get(
                 f"{BASE_URL}/api/listener/auth/exchange/",

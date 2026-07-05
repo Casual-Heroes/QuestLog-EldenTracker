@@ -53,7 +53,7 @@ class QuestLogSync:
         self._stop_event     = threading.Event()
         self._on_server_sync = on_server_sync  # callback(dict) — runs on bg thread
         self._http           = requests.Session()
-        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2"})
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
         self._http.verify    = True
         self._lock           = threading.Lock()
 
