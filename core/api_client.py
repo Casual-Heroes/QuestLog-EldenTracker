@@ -30,7 +30,7 @@ class QuestLogClient:
         self._http          = requests.Session()
         self._http.verify   = True
         self._http.timeout  = REQUEST_TIMEOUT
-        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2b"})
 
     @property
     def _key_header(self):
@@ -123,7 +123,7 @@ class QuestLogClient:
 
         _session = requests.Session()
         _session.verify = True
-        _session.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
+        _session.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2b"})
         try:
             r = _session.get(
                 f"{BASE_URL}/api/listener/auth/exchange/",

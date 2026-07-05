@@ -42,7 +42,7 @@ class BuildSyncPoller:
         self._thread          = None
         self._http            = requests.Session()
         self._http.verify     = True
-        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2a"})
+        self._http.headers.update({"User-Agent": "QuestLog-EldenTracker/1.0.2b"})
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 

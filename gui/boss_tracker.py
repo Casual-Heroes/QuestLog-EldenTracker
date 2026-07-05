@@ -17,7 +17,7 @@ LOGO_CH     = _assets_path("CH.png")
 LOGO_CH_ICO = _assets_path("CH.ico")
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
-APP_VERSION = "1.0.2a"
+APP_VERSION = "1.0.2b"
 
 SETTINGS_FILE = _data_path("settings.json")
 

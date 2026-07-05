@@ -711,6 +711,7 @@ class App:
         self._selector_win._widget.set_logged_in(username)
         self._build_planner.set_api_key(api_key)
         self._selector_win._tournament_widget.set_api_key(api_key)
+        self._start_build_poller(api_key)
         # Fetch runs immediately in background — no manual refresh needed
         self._refresh_server_runs(api_key)
 
