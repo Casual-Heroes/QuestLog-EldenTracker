@@ -27,8 +27,6 @@ from core.state_writer import write_state
 from games.registry import get_game
 from gui.run_selector import RunSelectorWidget
 from gui.boss_tracker import BossTrackerWindow
-from gui.build_planner import BuildPlannerWidget
-from gui.tournaments import TournamentWidget
 
 TICK_MS      = 1000
 OVERLAY_PORT = 8765
@@ -46,12 +44,6 @@ class _ServerSyncReady(QObject):
 
 class _RageReady(QObject):
     updated = pyqtSignal(float, str)  # rage_pct, rage_name
-
-class _CloudBuildsReady(QObject):
-    ready = pyqtSignal(list)  # list of build dicts from profile API
-
-class _BuildPollReady(QObject):
-    updated = pyqtSignal(list)  # flat sorted build list from poller
 
 class _RunPollReady(QObject):
     updated = pyqtSignal(list, list)  # active_runs, run_history
@@ -126,15 +118,6 @@ class SelectorWindow(QMainWindow):
         self._widget.run_deleted.connect(self._app._on_run_deleted)
         tabs.addTab(self._widget, "RUNS")
 
-        # Builds tab
-        self._build_planner = BuildPlannerWidget()
-        self._build_planner.start_run_requested.connect(self._app._start_run_from_build)
-        tabs.addTab(self._build_planner, "BUILDS")
-
-        # Compete tab
-        self._tournament_widget = TournamentWidget()
-        tabs.addTab(self._tournament_widget, "COMPETE")
-
         self.setCentralWidget(tabs)
         self._tabs = tabs
 
@@ -150,11 +133,6 @@ class App:
         self._selector_win._widget.server_run_connect.connect(self._on_server_run_connect)
         self._selector_win._widget.refresh_requested.connect(self._refresh_server_runs)
         self._selector_win._widget.settings_requested.connect(self._open_settings)
-        self._build_planner = self._selector_win._build_planner
-        self._build_planner.cloud_build_changed.connect(self._on_cloud_build_changed)
-        self._build_planner.builds_synced.connect(
-            self._selector_win._widget.new_panel._refresh_builds
-        )
         self._tracker      = None
         self._tracker_was_maximized = False   # captured at show time, not close time
         self._tracker_geo  = None             # captured at show time for restore
@@ -168,8 +146,8 @@ class App:
         self._ql_sync      = None   # QuestLogSync when a run is connected
         self._local_run    = None   # LocalRunData for non-synced runs
         self._local_life_start = None  # timestamp of current life start (local runs)
+        self._run_started_at   = None  # unix timestamp from server run's started_at field
         self._prev_session_deaths = 0  # for new-session detection
-        self._build_poller = None   # BuildSyncPoller — only when logged in
         self._timer        = QTimer()
         self._timer.timeout.connect(self._tick)
 
@@ -180,14 +158,6 @@ class App:
         # Bridge for rage updates after boss kill → main thread
         self._rage_bridge = _RageReady()
         self._rage_bridge.updated.connect(self._apply_rage_update)
-
-        # Bridge for cloud builds → build planner main thread
-        self._cloud_builds_bridge = _CloudBuildsReady()
-        self._cloud_builds_bridge.ready.connect(self._build_planner.receive_cloud_builds)
-
-        # Bridge for build poller updates → main thread
-        self._build_poll_bridge = _BuildPollReady()
-        self._build_poll_bridge.updated.connect(self._build_planner.receive_cloud_builds)
 
         # Bridge for run poller updates → main thread
         self._run_poll_bridge = _RunPollReady()
@@ -215,8 +185,9 @@ class App:
             return
 
         save_active_slug(slug)
-        self._run_dir    = run_dir
-        self._rage_label = game_meta.get("rage_label", "Rage Index")
+        self._run_dir      = run_dir
+        self._rage_label   = game_meta.get("rage_label", "Rage Index")
+        self._run_started_at = meta.get("started_at")
 
         self._session = Session(process_name=game_meta["process"], run_dir=run_dir)
         self._deaths  = DeathTracker(self._session)
@@ -470,6 +441,7 @@ class App:
             self._ql_sync = None
         self._local_run        = None
         self._local_life_start = None
+        self._run_started_at   = None
         if self._detector:
             self._detector.stop()
             self._detector = None
@@ -483,61 +455,6 @@ class App:
                 self._bosses.save()
             except Exception:
                 log.exception("Failed to save bosses")
-
-    # ── Start run from build ─────────────────────────────────────────────────
-
-    def _start_run_from_build(self, build: dict):
-        """Called when user clicks START RUN in the build planner."""
-        from core.run import create_run
-        game = build.get("game", "elden_ring")
-        name = build.get("name", "Unnamed Build").strip() or "Unnamed Build"
-        if game == "err":
-            game_id, mode_id = "elden_ring", "reforged"
-        else:
-            game_id, mode_id = "elden_ring", "vanilla"
-
-        # Create the local run stub immediately — never block the UI thread.
-        # If the user is logged in, create_session fires on a background thread
-        # and patches the token into the run meta when it comes back.
-        slug = create_run(name, game_id, mode_id)
-        self._selector_win._widget._populate_runs()
-        self._selector_win._tabs.setCurrentIndex(0)
-        self._launch_run(slug)
-        log.info("Started run '%s' from build '%s'", slug, name)
-
-        if self._api and getattr(self._api, "_api_key", None):
-            from core.local_run_data import items_from_build
-            from core.run import get_run_dir
-            import json as _json
-
-            api       = self._api
-            items     = items_from_build(build)
-            run_meta_path = os.path.join(get_run_dir(slug), "meta.json")
-
-            def _create_ql():
-                try:
-                    resp = api.create_session(
-                        game=game, game_mode=mode_id,
-                        build_name=name, items=items,
-                    )
-                    token = resp.get("token") if resp.get("ok") else None
-                    if not token:
-                        log.warning("create_session returned no token: %s", resp)
-                        return
-                    # Patch token into the run meta file on disk
-                    try:
-                        with open(run_meta_path) as f:
-                            meta = _json.load(f)
-                        meta["questlog_token"] = token
-                        with open(run_meta_path, "w") as f:
-                            _json.dump(meta, f, indent=2)
-                        log.info("QL token patched into run '%s' token=%s", slug, token[:12])
-                    except Exception as e:
-                        log.warning("Could not patch QL token into meta: %s", e)
-                except Exception as exc:
-                    log.warning("create_session failed: %s", exc)
-
-            threading.Thread(target=_create_ql, daemon=True).start()
 
     # ── Tick ─────────────────────────────────────────────────────────────────
 
@@ -556,6 +473,7 @@ class App:
                     deaths=self._deaths,
                     ql_sync=self._ql_sync,
                     local_run=self._local_run,
+                    started_at=self._run_started_at,
                 )
         except Exception:
             log.exception("Error in tick loop")
@@ -598,9 +516,6 @@ class App:
         self._api = QuestLogClient(api_key, s.get("session_token", ""))
         self._selector_win._widget.set_logged_in(username)
         self._selector_win._widget.set_server_runs(active_runs, run_history)
-        self._build_planner.set_api_key(api_key)
-        self._selector_win._tournament_widget.set_api_key(api_key)
-        self._start_build_poller(api_key)
 
         if self._tracker:
             self._tracker.settings_tab.login_succeeded.emit(api_key, username, active_runs)
@@ -663,10 +578,11 @@ class App:
 
         _MODE_MAP = {"err": "reforged", "vanilla": "vanilla", "reforged": "reforged"}
 
-        token   = server_run.get("token", "")
-        game    = server_run.get("game", "elden_ring")
-        mode    = _MODE_MAP.get(server_run.get("game_mode", "vanilla"), "vanilla")
-        name    = server_run.get("build_name") or server_run.get("name") or f"{game.replace('_', ' ').title()} — QuestLog"
+        token      = server_run.get("token", "")
+        game       = server_run.get("game", "elden_ring")
+        mode       = _MODE_MAP.get(server_run.get("game_mode", "vanilla"), "vanilla")
+        name       = server_run.get("build_name") or server_run.get("name") or f"{game.replace('_', ' ').title()} — QuestLog"
+        started_at = server_run.get("started_at")
 
         # Find existing local stub that was created for this exact server token,
         # or always create a fresh one — never reuse a different run's data.
@@ -678,8 +594,12 @@ class App:
                 break
 
         if slug is None:
-            slug = create_run(name, game, mode, questlog_token=token)
+            slug = create_run(name, game, mode, questlog_token=token, started_at=started_at)
             log.info("Created local stub run '%s' for server run %s", slug, token[:8])
+        elif started_at:
+            # Update started_at on existing stub in case it wasn't stored yet
+            from core.run import update_run_meta
+            update_run_meta(slug, {"started_at": started_at})
 
         # Set API client using our stored api_key + the server run's token
         if self._api:
@@ -712,9 +632,6 @@ class App:
         log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
         self._selector_win._widget.set_logged_in(username)
-        self._build_planner.set_api_key(api_key)
-        self._selector_win._tournament_widget.set_api_key(api_key)
-        self._start_build_poller(api_key)
         # Fetch runs immediately in background — no manual refresh needed
         self._refresh_server_runs(api_key)
 
@@ -736,8 +653,6 @@ class App:
         notifier = _ServerRunsReady()
         notifier.ready.connect(self._selector_win._widget.set_server_runs)
 
-        cloud_builds_bridge = self._cloud_builds_bridge
-
         def _fetch():
             try:
                 r = requests.get(
@@ -757,11 +672,6 @@ class App:
             run_history = profile.get("run_history", [])
             log.info("Server runs — active=%d history=%d", len(active_runs), len(run_history))
             notifier.ready.emit(active_runs, run_history)
-            # Push builds to build planner
-            builds = profile.get("builds", [])
-            if builds:
-                log.info("Cloud builds received: %d", len(builds))
-                cloud_builds_bridge.ready.emit(builds)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -855,34 +765,6 @@ class App:
             self._deaths._rage_pct = float(rage_pct)
             self._deaths._consecutive = int(rage_pct / 25)
 
-    def _start_build_poller(self, api_key: str):
-        if self._build_poller:
-            self._build_poller.stop()
-        from core.build_sync_poller import BuildSyncPoller
-        build_bridge = self._build_poll_bridge
-        run_bridge   = self._run_poll_bridge
-
-        def _on_builds(builds, added, removed, updated):
-            build_bridge.updated.emit(builds)
-
-        def _on_runs(active_runs, run_history):
-            run_bridge.updated.emit(active_runs, run_history)
-
-        def _active_token():
-            return self._ql_sync.token if self._ql_sync else None
-
-        self._build_poller = BuildSyncPoller(
-            api_key,
-            on_builds_updated=_on_builds,
-            on_runs_updated=_on_runs,
-            active_token_fn=_active_token,
-        )
-        self._build_poller.start()
-
-    def _on_cloud_build_changed(self):
-        if self._build_poller:
-            self._build_poller.force_refresh()
-
     def _do_logout(self):
         from gui.boss_tracker import _load_settings, _save_settings
         s = _load_settings()
@@ -894,9 +776,6 @@ class App:
         if self._tracker:
             self._tracker._api = None
         self._selector_win._widget.set_logged_out()
-        if self._build_poller:
-            self._build_poller.stop()
-            self._build_poller = None
         log.info("Logged out — running offline")
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
@@ -904,9 +783,6 @@ class App:
     def _shutdown(self):
         log.info("Shutting down.")
         self._stop_active()
-        if self._build_poller:
-            self._build_poller.stop()
-            self._build_poller = None
         tracker = self._tracker
         self._tracker = None
         if tracker:

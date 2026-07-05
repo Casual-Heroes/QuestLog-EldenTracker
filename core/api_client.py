@@ -31,7 +31,7 @@ class QuestLogClient:
         self._http.verify   = True
         self._http.timeout  = REQUEST_TIMEOUT
         self._http.headers.update({
-            "User-Agent":    "QuestLog-EldenTracker/1.0.2b",
+            "User-Agent":    "QuestLog-EldenTracker/1.0.2c",
             "X-App-Version": "1.0.2",
         })
 
@@ -127,7 +127,7 @@ class QuestLogClient:
         _session = requests.Session()
         _session.verify = True
         _session.headers.update({
-            "User-Agent":    "QuestLog-EldenTracker/1.0.2b",
+            "User-Agent":    "QuestLog-EldenTracker/1.0.2c",
             "X-App-Version": "1.0.2",
         })
         try:

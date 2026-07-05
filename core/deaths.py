@@ -4,7 +4,6 @@ from core.bosses import (
     TIER_ENEMY, TIER_GREAT_ENEMY, TIER_LEGEND, TIER_DEMIGOD, TIER_GOD
 )
 
-ROLLING_WINDOW_SECS = 1800  # 30 minutes
 TIME_DECAY_DELAY    = 90    # seconds after last death before time decay kicks in
 TIME_DECAY_RATE     = 25 / 60  # 25% per minute
 
@@ -85,25 +84,10 @@ class DeathTracker:
         self._rage_pct        = 0.0
         self._hollow_streak   = 0
 
-    def _prune_window(self):
-        cutoff = time.time() - ROLLING_WINDOW_SECS
-        while self._death_times and self._death_times[0] < cutoff:
-            self._death_times.popleft()
-
-    def deaths_per_hour(self):
-        """
-        Returns float rate or None if under the 10-minute threshold.
-        None means the caller should display '--'.
-        """
-        session_secs = self.session.elapsed_seconds()
-        if session_secs < 180:
-            return None
-        session_hrs = session_secs / 3600
-        return round(self.session.session_deaths / session_hrs, 1)
-
-    def seconds_until_rate_shows(self):
-        """Seconds remaining before Deaths/HR becomes meaningful. 0 when active."""
-        return max(0, 180 - int(self.session.elapsed_seconds()))
+    def deaths_per_boss(self, bosses_defeated):
+        if bosses_defeated < 1:
+            return 0.0
+        return round(self.session.total_deaths / bosses_defeated, 1)
 
     def on_new_session_detected(self):
         """Call when server signals a new sitting (session_deaths reset to 0 after grace)."""

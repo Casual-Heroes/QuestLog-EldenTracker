@@ -182,11 +182,6 @@ class NewRunPanel(QWidget):
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
 
-        # ── Optional build link ───────────────────────────────────────────────
-        self.build_combo = QComboBox()
-        self._refresh_builds()
-        layout.addWidget(self.build_combo)
-
         local_row = QHBoxLayout()
         local_row.setSpacing(8)
         self.local_check = QCheckBox()
@@ -218,13 +213,6 @@ class NewRunPanel(QWidget):
         create_btn.clicked.connect(self._create)
         layout.addWidget(create_btn)
 
-    def _refresh_builds(self):
-        from core.local_run_data import list_local_builds
-        self.build_combo.clear()
-        self.build_combo.addItem("No build linked", None)
-        for name, path in list_local_builds():
-            self.build_combo.addItem(name, path)
-
     def _on_game_changed(self):
         self._populate_modes()
 
@@ -251,10 +239,8 @@ class NewRunPanel(QWidget):
         if not name or not game_id or not mode_id:
             return
         local_only = self.local_check.isChecked()
-        build_path = self.build_combo.currentData() or ""
         slug = create_run(name, game_id, mode_id,
-                          questlog_token="__local__" if local_only else None,
-                          build_path=build_path)
+                          questlog_token="__local__" if local_only else None)
         self.local_check.setChecked(False)
         self.name_input.clear()
         self.run_created.emit(slug)

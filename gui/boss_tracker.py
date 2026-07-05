@@ -1,6 +1,7 @@
 import sys
 import json
 import os
+import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QScrollArea, QLabel, QCheckBox, QLineEdit,
@@ -17,7 +18,7 @@ LOGO_CH     = _assets_path("CH.png")
 LOGO_CH_ICO = _assets_path("CH.ico")
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
-APP_VERSION = "1.0.2b"
+APP_VERSION = "1.0.2c"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -507,11 +508,11 @@ class MortalityTab(QWidget):
         secondary = QHBoxLayout()
         secondary.setSpacing(0)
 
-        self._dhr_card      = self._make_stat_card("DEATHS / HR",   "--", sub="")
+        self._dhr_card      = self._make_stat_card("DEATHS / BOSS", "0.0", sub="")
         self._session_card2 = self._make_stat_card("SESSION TIME",  "00:00:00")
         self._streak_card   = self._make_stat_card("CURRENT STREAK","00:00:00")
         self._longest_card  = self._make_stat_card("LONGEST LIFE",  "00:00:00")
-        self._survival_card = self._make_stat_card("SURVIVAL TIME", "00:00:00")
+        self._survival_card = self._make_stat_card("RUN DURATION", "--")
         secondary.addWidget(self._dhr_card)
         secondary.addSpacing(16)
         secondary.addWidget(self._session_card2)
@@ -628,32 +629,27 @@ class MortalityTab(QWidget):
         w   = int(self._rage_bar_track.width() * pct)
         self._rage_bar.setFixedWidth(max(0, w))
 
-    def update_timing(self, streak_sec, longest_sec, survival_sec=0):
+    def update_timing(self, streak_sec, longest_sec, started_at=None):
         def _fmt(s):
             return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
         self._streak_card._value_lbl.setText(_fmt(streak_sec))
         self._longest_card._value_lbl.setText(_fmt(longest_sec))
-        self._survival_card._value_lbl.setText(_fmt(survival_sec))
+        self._survival_card._value_lbl.setText(_run_duration_display(started_at))
 
-    def update_stats(self, session, deaths):
+    def update_stats(self, session, deaths, ql_sync=None, bosses_defeated=0):
         self._session = session
         self._deaths  = deaths
 
         self._session_card._value_lbl.setText(str(session.session_deaths))
         self._total_card._value_lbl.setText(str(session.total_deaths))
         self._session_card2._value_lbl.setText(session.elapsed_str())
-        _dhr     = deaths.deaths_per_hour()
-        _ses_sec = int(session.elapsed_seconds())
-        self._dhr_card._value_lbl.setText("--" if _dhr is None else str(_dhr))
+        server_rate = ql_sync.get_true_death_rate() if ql_sync else None
+        _dpb = server_rate if server_rate is not None else deaths.deaths_per_boss(bosses_defeated)
+        self._dhr_card._value_lbl.setText(str(_dpb))
         if self._dhr_card._sub_lbl is not None:
-            if _dhr is None:
-                _rem = max(0, 600 - _ses_sec)
-                _m, _s = divmod(_rem, 60)
-                self._dhr_card._sub_lbl.setText(f"{_m}m {_s:02d}s until rate shows")
-            else:
-                self._dhr_card._sub_lbl.setText(
-                    f"{session.session_deaths} deaths / {session.elapsed_str()}"
-                )
+            self._dhr_card._sub_lbl.setText(
+                f"{session.total_deaths} deaths / {bosses_defeated} bosses"
+            )
 
         pct, state, color = deaths.rage_state()
         hollow = deaths.hollow_streak()
@@ -692,6 +688,21 @@ def _keyring_load() -> str:
         return val or ""
     except Exception:
         return ""
+
+
+def _run_duration_display(started_at):
+    if not started_at:
+        return "--"
+    elapsed = int(time.time()) - int(started_at)
+    if elapsed < 0:
+        elapsed = 0
+    days  = elapsed // 86400
+    hours = (elapsed % 86400) // 3600
+    mins  = (elapsed % 3600) // 60
+    if days > 0:
+        return f"{days}d {hours:02d}:{mins:02d}"
+    secs = elapsed % 60
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
 
 def _load_settings():
@@ -1571,11 +1582,11 @@ class CompactStatsBar(QWidget):
 
         session_col, self._session_val = stat("SESSION DEATHS", "0")
         total_col,   self._total_val   = stat("TOTAL DEATHS",   "0")
-        dhr_col,     self._dhr_val     = stat("DEATHS / HR",    "0.0")
+        dhr_col,     self._dhr_val     = stat("DEATHS / BOSS",  "0.0")
         time_col,    self._time_val    = stat("SESSION TIME",   "00:00:00")
         streak_col,   self._streak_val   = stat("CURRENT STREAK", "00:00:00")
         longest_col,  self._longest_val  = stat("LONGEST LIFE",   "00:00:00")
-        survival_col, self._survival_val = stat("SURVIVAL TIME",  "00:00:00")
+        survival_col, self._survival_val = stat("RUN DURATION",   "--")
         rage_col,     self._rage_val     = stat("FURY",           "Calm")
 
         def sep():
@@ -1612,18 +1623,19 @@ class CompactStatsBar(QWidget):
         line.setStyleSheet(f"color: {BORDER_SOLID};")
         return line
 
-    def update_timing(self, streak_sec, longest_sec, survival_sec=0):
+    def update_timing(self, streak_sec, longest_sec, started_at=None):
         def _fmt(s):
             return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
         self._streak_val.setText(_fmt(streak_sec))
         self._longest_val.setText(_fmt(longest_sec))
-        self._survival_val.setText(_fmt(survival_sec))
+        self._survival_val.setText(_run_duration_display(started_at))
 
-    def update_stats(self, session, deaths):
+    def update_stats(self, session, deaths, ql_sync=None, bosses_defeated=0):
         self._session_val.setText(str(session.session_deaths))
         self._total_val.setText(str(session.total_deaths))
-        _dhr2 = deaths.deaths_per_hour()
-        self._dhr_val.setText("--" if _dhr2 is None else str(_dhr2))
+        server_rate = ql_sync.get_true_death_rate() if ql_sync else None
+        _dpb = server_rate if server_rate is not None else deaths.deaths_per_boss(bosses_defeated)
+        self._dhr_val.setText(str(_dpb))
         self._time_val.setText(session.elapsed_str())
 
         pct, state, color = deaths.rage_state()
@@ -1992,7 +2004,7 @@ class BossTrackerWindow(QMainWindow):
             if self._api:
                 self._api.post_boss_reset()
 
-    def refresh(self, boss_list, session=None, deaths=None, ql_sync=None, local_run=None):
+    def refresh(self, boss_list, session=None, deaths=None, ql_sync=None, local_run=None, started_at=None):
         by_group = {}
         for b in boss_list:
             by_group.setdefault(b["group"], []).append(b)
@@ -2002,16 +2014,16 @@ class BossTrackerWindow(QMainWindow):
 
         s = session or self._session
         d = deaths  or self._deaths
+        bosses_defeated = sum(1 for b in boss_list if b.get("defeated"))
         if s and d:
-            self.stats_bar.update_stats(s, d)
-            self.mortality_tab.update_stats(s, d)
+            self.stats_bar.update_stats(s, d, ql_sync=ql_sync, bosses_defeated=bosses_defeated)
+            self.mortality_tab.update_stats(s, d, ql_sync=ql_sync, bosses_defeated=bosses_defeated)
 
         if ql_sync and ql_sync.running:
-            streak   = ql_sync.current_streak_sec()
-            longest  = ql_sync.longest_life_sec()
-            survival = ql_sync.current_survival_sec()
-            self.stats_bar.update_timing(streak, longest, survival)
-            self.mortality_tab.update_timing(streak, longest, survival)
+            streak  = ql_sync.current_streak_sec()
+            longest = ql_sync.longest_life_sec()
+            self.stats_bar.update_timing(streak, longest, started_at=started_at)
+            self.mortality_tab.update_timing(streak, longest, started_at=started_at)
 
             items, collected, total = ql_sync.get_items()
             if items:
@@ -2026,6 +2038,8 @@ class BossTrackerWindow(QMainWindow):
                 )
 
         elif local_run:
+            self.stats_bar.update_timing(0, 0, started_at=started_at)
+            self.mortality_tab.update_timing(0, 0, started_at=started_at)
             items, collected, total = local_run.get_items()
             self.items_tab.refresh(items, collected, total)
             recent = local_run.get_recent_deaths()

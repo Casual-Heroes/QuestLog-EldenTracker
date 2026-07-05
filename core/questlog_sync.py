@@ -54,7 +54,7 @@ class QuestLogSync:
         self._on_server_sync = on_server_sync  # callback(dict) — runs on bg thread
         self._http           = requests.Session()
         self._http.headers.update({
-            "User-Agent":    "QuestLog-EldenTracker/1.0.2b",
+            "User-Agent":    "QuestLog-EldenTracker/1.0.2c",
             "X-App-Version": "1.0.2",
         })
         self._http.verify    = True
@@ -72,6 +72,7 @@ class QuestLogSync:
         self._cached_deaths        = []     # last recent_deaths list from status poll
         self._items_total          = 0
         self._items_collected      = 0
+        self._true_death_rate      = None   # server-computed deaths/boss (None until first boss killed)
         self._local_session_deaths = -1    # tracks server session_deaths for new-session detection
         self._game_active          = False  # True only when game EXE is detected running
         self._paused_streak_sec    = 0      # streak seconds banked when game stopped
@@ -148,6 +149,10 @@ class QuestLogSync:
     def _poll_status(self):
         try:
             sr = self._http.get(self._url("status/"), headers=self._headers(), timeout=5)
+            if sr.status_code == 403:
+                log.warning("Session 403 — token expired or session ended on server. Stopping sync.")
+                self._stop_event.set()
+                return
             if sr.status_code != 200:
                 return
             data = sr.json()
@@ -158,6 +163,7 @@ class QuestLogSync:
                 self._cached_deaths   = data.get("recent_deaths", [])
                 self._items_total     = data.get("total", 0)
                 self._items_collected = data.get("collected", 0)
+                self._true_death_rate = data.get("true_death_rate")
 
             server_deaths         = data.get("deaths", 0)
             server_session_deaths = data.get("session_deaths", -1)
@@ -288,6 +294,10 @@ class QuestLogSync:
                 return int(self._paused_survival_sec)
             return int(self._total_survival_sec + (time.time() - self._life_start_ts))
 
+    def get_true_death_rate(self):
+        with self._lock:
+            return self._true_death_rate
+
     def get_items(self):
         with self._lock:
             return list(self._cached_items), self._items_collected, self._items_total
@@ -374,7 +384,8 @@ class QuestLogSync:
             r = self._http.post(self._url("set-focus/"),
                                 json={"boss_name": boss_name},
                                 headers=self._headers(), timeout=5)
-            log.info("set_focus %r → status=%d body=%r", boss_name, r.status_code, r.text[:200])
+            if not r.ok:
+                log.warning("set_focus %r → status=%d", boss_name, r.status_code)
         except Exception as e:
             log.warning("set_focus failed: %s", e, exc_info=True)
 
@@ -400,7 +411,8 @@ class QuestLogSync:
                 headers=self._headers(),
                 timeout=5,
             )
-            log.debug("mark_boss key=%r status=%d body=%r", boss_key, r.status_code, r.text[:300])
+            if not r.ok:
+                log.warning("mark_boss %r → status=%d", boss_key, r.status_code)
             if not r.content:
                 return None
             data = r.json()

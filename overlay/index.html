@@ -337,7 +337,7 @@
   <div class="stat-cards">
     <div class="stat-card">
       <div class="stat-value" id="dph">0.0</div>
-      <div class="stat-label">Deaths / HR</div>
+      <div class="stat-label">Deaths / Boss</div>
     </div>
     <div class="stat-card">
       <div class="stat-value" id="timer">00:00:00</div>
@@ -459,7 +459,7 @@
       deathEl.textContent = deaths;
       deathEl.className = 'death-number' + (deaths > 0 ? ' has-deaths' : '');
 
-      document.getElementById('dph').textContent         = d.deaths_per_hour.toFixed(1);
+      document.getElementById('dph').textContent         = d.deaths_per_boss.toFixed(1);
       document.getElementById('timer').textContent       = d.elapsed;
       document.getElementById('rage-pct-val').textContent = d.rage_pct + '%';
       document.getElementById('rage-name').textContent   = d.rage_name;

@@ -52,7 +52,7 @@ def list_runs():
     return runs
 
 
-def create_run(name, game_id, mode_id, questlog_token=None, build_path=None):
+def create_run(name, game_id, mode_id, questlog_token=None, build_path=None, started_at=None):
     """Create a new run directory and meta.json. Returns the run slug."""
     base = _slug(name)
     slug = base
@@ -73,6 +73,8 @@ def create_run(name, game_id, mode_id, questlog_token=None, build_path=None):
     }
     if questlog_token:
         meta["questlog_token"] = questlog_token
+    if started_at:
+        meta["started_at"] = started_at
     if build_path:
         safe = _safe_build_path(build_path)
         if safe:
@@ -84,6 +86,19 @@ def create_run(name, game_id, mode_id, questlog_token=None, build_path=None):
         json.dump(meta, f, indent=2)
 
     return slug
+
+
+def update_run_meta(slug, updates: dict):
+    """Merge updates into an existing run's meta.json."""
+    path = os.path.join(RUNS_DIR, slug, "meta.json")
+    try:
+        with open(path) as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+    meta.update(updates)
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2)
 
 
 def get_run_dir(slug):
