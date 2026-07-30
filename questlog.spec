@@ -66,9 +66,15 @@ coll = COLLECT(
 # Copy data folders next to the exe (not into _internal)
 # core/paths.py looks for these relative to sys.executable
 _dist = os.path.join(DISTPATH, 'EldenTracker')
-for _folder in ('overlay', 'games', 'assets'):
+for _folder in ('overlay', 'games', 'assets', 'resources', 'ERR-Debug-Tool-Resources'):
     _src = os.path.join(SPECPATH, _folder)
     _dst = os.path.join(_dist, _folder)
     if os.path.exists(_dst):
         shutil.rmtree(_dst)
     shutil.copytree(_src, _dst)
+
+for _file in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
+    _src = os.path.join(SPECPATH, _file)
+    _dst = os.path.join(_dist, _file)
+    if os.path.exists(_src):
+        shutil.copy2(_src, _dst)

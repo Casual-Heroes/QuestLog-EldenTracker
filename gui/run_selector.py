@@ -3,15 +3,27 @@ import time
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QLineEdit, QComboBox, QSizePolicy,
-    QMessageBox, QCheckBox,
+    QMessageBox, QCheckBox, QTabWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
-from PyQt6.QtGui import QFont, QPixmap, QDesktopServices, QIcon
+from PyQt6.QtGui import QFont, QPixmap, QDesktopServices, QIcon, QImageReader
 
 from core.paths import assets as _assets_path
 LOGO_QL  = _assets_path("QL1.png")
 LOGO_CH  = _assets_path("CH.png")
 ICO_CH   = _assets_path("CH.ico")
+
+
+def _load_pixmap(*paths: str) -> QPixmap:
+    for path in paths:
+        pix = QPixmap(path)
+        if not pix.isNull():
+            return pix
+        reader = QImageReader(path)
+        image = reader.read()
+        if not image.isNull():
+            return QPixmap.fromImage(image)
+    return QPixmap()
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 
@@ -177,10 +189,24 @@ class NewRunPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self._populate_modes()
+        self.mode_combo.currentIndexChanged.connect(self._populate_save_slots)
 
         row.addWidget(self.game_combo, 1)
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
+
+        save_row = QHBoxLayout()
+        save_row.setSpacing(12)
+        self.save_combo = QComboBox()
+        self.save_combo.setToolTip("Character slot to scan for automatic item tracking")
+        refresh_save_btn = QPushButton("Refresh Characters")
+        refresh_save_btn.setFixedHeight(34)
+        refresh_save_btn.clicked.connect(self._populate_save_slots)
+        save_row.addWidget(self.save_combo, 1)
+        save_row.addWidget(refresh_save_btn)
+        layout.addLayout(save_row)
+        self._select_saved_save_mode()
+        self._populate_save_slots()
 
         local_row = QHBoxLayout()
         local_row.setSpacing(8)
@@ -231,6 +257,75 @@ class NewRunPanel(QWidget):
             return
         for m in self._games[idx]["modes"]:
             self.mode_combo.addItem(m["name"], m["id"])
+        self._populate_save_slots()
+
+    def _populate_save_slots(self):
+        if not hasattr(self, "save_combo"):
+            return
+        self.save_combo.clear()
+        game_id = self.game_combo.currentData()
+        mode_id = self.mode_combo.currentData()
+        if game_id != "elden_ring" or mode_id not in ("vanilla", "reforged"):
+            self.save_combo.addItem("Manual item tracking only", None)
+            self.save_combo.setEnabled(False)
+            return
+        self.save_combo.setEnabled(True)
+        try:
+            from core.save_paths import find_save_files
+            from core.save_watcher import SaveWatcher
+            from gui.boss_tracker import _load_settings
+            settings = _load_settings()
+            current_path = settings.get("save_file_path", "")
+            current_name = settings.get("save_character_name", "")
+            try:
+                current_slot = int(settings.get("save_slot"))
+            except (TypeError, ValueError):
+                current_slot = None
+            selected_index = -1
+            candidates = [c for c in find_save_files() if c["mode"] == mode_id]
+            if not candidates:
+                self.save_combo.addItem("No save file found - configure in Settings", None)
+                return
+            for c in candidates:
+                watcher = SaveWatcher(c["path"], mode=mode_id)
+                slots = watcher.list_slots()
+                for slot in slots:
+                    label = f"{slot['name']}  -  Slot {slot['index'] + 1}  -  {mode_id.title()}"
+                    row_index = self.save_combo.count()
+                    self.save_combo.addItem(label, {
+                        "path": c["path"],
+                        "slot": slot["index"],
+                        "name": slot["name"],
+                    })
+                    if selected_index < 0 and current_path == c["path"] and current_slot == slot["index"]:
+                        selected_index = row_index
+                    elif (
+                        selected_index < 0
+                        and current_slot is None
+                        and current_name
+                        and current_name == slot["name"]
+                    ):
+                        selected_index = row_index
+            if selected_index >= 0:
+                self.save_combo.setCurrentIndex(selected_index)
+        except Exception:
+            self.save_combo.addItem("Could not read save slots - configure in Settings", None)
+
+    def _select_saved_save_mode(self):
+        try:
+            from gui.boss_tracker import _load_settings
+            save_path = (_load_settings().get("save_file_path") or "").lower()
+        except Exception:
+            return
+        if save_path.endswith(".err"):
+            mode_id = "reforged"
+        elif save_path.endswith(".sl2"):
+            mode_id = "vanilla"
+        else:
+            return
+        idx = self.mode_combo.findData(mode_id)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
 
     def _create(self):
         name    = self.name_input.text().strip()
@@ -239,8 +334,19 @@ class NewRunPanel(QWidget):
         if not name or not game_id or not mode_id:
             return
         local_only = self.local_check.isChecked()
+        save_choice = self.save_combo.currentData() if hasattr(self, "save_combo") else None
+        if save_choice:
+            from gui.boss_tracker import _load_settings, _save_settings
+            settings = _load_settings()
+            settings["save_file_path"] = save_choice["path"]
+            settings["save_slot"] = save_choice["slot"]
+            settings["save_character_name"] = save_choice["name"]
+            _save_settings(settings)
         slug = create_run(name, game_id, mode_id,
-                          questlog_token="__local__" if local_only else None)
+                          questlog_token="__local__" if local_only else None,
+                          save_file_path=save_choice.get("path") if save_choice else None,
+                          save_slot=save_choice.get("slot") if save_choice else None,
+                          save_character_name=save_choice.get("name") if save_choice else None)
         self.local_check.setChecked(False)
         self.name_input.clear()
         self.run_created.emit(slug)
@@ -371,9 +477,11 @@ class RunSelectorWidget(QWidget):
 
         # CH logo (single logo, left side)
         logo_lbl = QLabel()
-        pix = QPixmap(LOGO_CH)
+        logo_lbl.setFixedSize(44, 44)
+        pix = _load_pixmap(LOGO_CH, ICO_CH)
         if not pix.isNull():
-            logo_lbl.setPixmap(pix.scaledToHeight(44, Qt.TransformationMode.SmoothTransformation))
+            logo_lbl.setPixmap(pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
             logo_lbl.setText("CH")
             logo_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 22px; font-weight: 700;")
@@ -506,7 +614,23 @@ class RunSelectorWidget(QWidget):
 
         body_layout.addLayout(left, 1)
         body_layout.addLayout(right, 1)
-        root.addWidget(body, 1)
+
+        # ── Tabs: RUNS (existing body above) | BUILDS (build planner) ──
+        from gui.build_planner import BuildPlannerWidget
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: none; background: {BG_BASE}; }}
+            QTabBar {{ background: {BG_SURFACE}; }}
+            QTabBar::tab {{
+                background: transparent; color: {TEXT_MUTED}; padding: 10px 24px;
+                font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+            }}
+            QTabBar::tab:selected {{ color: {ACCENT_GOLD}; border-bottom: 2px solid {ACCENT_GOLD}; }}
+        """)
+        self.tabs.addTab(body, "RUNS")
+        self.build_planner_tab = BuildPlannerWidget()
+        self.tabs.addTab(self.build_planner_tab, "BUILDS")
+        root.addWidget(self.tabs, 1)
 
         self.login_btn.clicked.connect(self.login_requested.emit)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)

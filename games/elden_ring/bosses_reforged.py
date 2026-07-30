@@ -40,6 +40,9 @@ _REFORGED_NEW = [
     # ── CAELID ────────────────────────────────────────────────────────────────
     # Replaces Leonine Misbegotten + Crucible Knight at Redmane Castle plaza
     ("Azash, Pride of the Redmanes",      "Redmane Castle",              "Caelid",                      LEGEND),
+    # New -- reward is Singularity
+    ("Alabaster Lord",                    "East of the Church of the Plague", "Caelid",                  GREAT_ENEMY),
+    ("Leonine Misbegotten",               "War-Dead Catacombs",          "Caelid",                      GREAT_ENEMY),
 
     # ── DRAGONBARROW ──────────────────────────────────────────────────────────
     # New — Farum Greatbridge

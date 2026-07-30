@@ -1,0 +1,14 @@
+{
+  "paintings": {
+    "40002008": {"name": "\"Homing Instinct\" Painting"},
+    "40002009": {"name": "\"Resurrection\" Painting"},
+    "4000200A": {"name": "\"Champion's Song\" Painting"},
+    "4000200B": {"name": "\"Sorcerer\" Painting"},
+    "4000200C": {"name": "\"Prophecy\" Painting"},
+    "4000200D": {"name": "\"Flightless Bird\" Painting"},
+    "4000200E": {"name": "\"Redmane\" Painting"},
+    "401EA488": {"name": "\"Incursion\" Painting"},
+    "401EA489": {"name": "\"The Sacred Tower\" Painting"},
+    "401EA48A": {"name": "\"Domain of Dragons\" Painting"}
+  }
+}

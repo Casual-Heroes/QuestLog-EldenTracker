@@ -1,0 +1,49 @@
+{
+  "_disclaimer": "ERR renames several vanilla graces and adds new ones not present in vanilla's regulation.bin/save data at all. This file is a WORK IN PROGRESS overlay on top of vanilla graces.json -- confirmed_renames are verified live in-game by the user; new_graces are sourced from ERR's official changelog (world-change notes) and not yet flag-ID-confirmed against a live save; removed_in_err lists vanilla graces ERR's changelog confirms no longer exist, for exclusion once ERR gets its own full save_data table (see save_data.py's 'Vanilla-only for now' TODO). Do not treat unconfirmed entries as ground truth for a 100%-completion count until flag IDs are verified the same way confirmed_renames were (live gameplay screenshot, not a wiki).",
+
+  "confirmed_renames": {
+    "71000": {
+      "vanilla_name": "Godrick the Grafted",
+      "err_name": "Royal Gardens",
+      "subcategory": "Stormveil Castle",
+      "confirmed": "live gameplay screenshot, 2026-07-08"
+    },
+    "71001": {
+      "vanilla_name": "Margit, the Fell Omen",
+      "err_name": "Ambition's Rest",
+      "subcategory": "Stormhill",
+      "confirmed": "live gameplay screenshot, 2026-07-08"
+    }
+  },
+
+  "suspect_renames_unconfirmed": {
+    "71210": {"vanilla_name": "Dragonkin Soldier of Nokstella", "subcategory": "Ainsel River"},
+    "71221": {"vanilla_name": "Mimic Tear", "subcategory": "Nokron, Eternal City"},
+    "71240": {"vanilla_name": "Astel, Naturalborn of the Void", "subcategory": "Ainsel River"},
+    "71301": {"vanilla_name": "Dragonlord Placidusax", "subcategory": "Crumbling Farum Azula"},
+    "73900": {"vanilla_name": "Magma Wyrm", "subcategory": "Ruin-Strewn Precipice"},
+    "76422": {"vanilla_name": "Starscourge Radahn", "subcategory": "Caelid"},
+    "76509": {"vanilla_name": "Fire Giant", "subcategory": "Flame Peak"}
+  },
+
+  "new_graces_unconfirmed_flag_id": [
+    {"name": "Gilded Cave of Knowledge", "subcategory": "Limgrave", "note": "reworked Cave of Knowledge tutorial area with new boss"},
+    {"name": "Church of Vengeance", "subcategory": "Stormhill", "note": "new location southwest of Stormhill Evergaol"},
+    {"name": "Locus of Concordance", "subcategory": "Liurnia of the Lakes", "note": "new grace at end of Academy Crystal Cave"},
+    {"name": "Inner Wall Lake", "subcategory": "Altus Plateau", "note": "near Blackguard Boggart's second location"},
+    {"name": "Floating Temple Ruins", "subcategory": "Crumbling Farum Azula", "note": "on floating rocks just before Placidusax"},
+    {"name": "Upper Nokstella Chair-Crypt", "subcategory": "Ainsel River", "note": "just before the two Silver Tear NPCs in Nokstella"},
+    {"name": "Underground's End", "subcategory": "Ainsel River", "note": "just before Astel"},
+    {"name": "Sunken Rise", "subcategory": "Land of Shadow / Cerulean Coast", "note": "replaces The Fissure grace"},
+    {"name": "Site of Grace past the Grafted Scion", "subcategory": "Four Belfries", "note": "added for easier revisits"}
+  ],
+
+  "removed_in_err": [
+    {"vanilla_name": "Inner Aeonia", "subcategory": "Caelid"},
+    {"vanilla_name": "Primeval Sorcerer Azur", "subcategory": "Mt. Gelmir"},
+    {"vanilla_name": "The Fissure", "subcategory": "Land of Shadow / Cerulean Coast", "note": "replaced by new grace 'Sunken Rise'"},
+    {"vanilla_name": "Tree-Worship Passage", "subcategory": "Shadow Keep"},
+    {"vanilla_name": "Midra's Library", "subcategory": "Midra's Manse"},
+    {"vanilla_name": "Chamber, First Floor", "subcategory": "Midra's Manse"}
+  ]
+}

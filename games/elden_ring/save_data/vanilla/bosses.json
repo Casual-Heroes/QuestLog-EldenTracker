@@ -1,0 +1,511 @@
+{
+  "bosses": {
+    "10000800": {
+      "name": "Godrick the Grafted"
+    },
+    "10000850": {
+      "name": "Margit, the Fell Omen"
+    },
+    "10010800": {
+      "name": "Grafted Scion"
+    },
+    "11000800": {
+      "name": "Morgott, the Omen King"
+    },
+    "11000850": {
+      "name": "Godfrey, First Elden Lord"
+    },
+    "11050800": {
+      "name": "Godfrey, First Elden Lord (Hoarah Loux)"
+    },
+    "11050850": {
+      "name": "Sir Gideon Ofnir, the All-Knowing"
+    },
+    "12010800": {
+      "name": "Dragonkin Soldier of Nokstella"
+    },
+    "12010850": {
+      "name": "Dragonkin Soldier (Lake of Rot)"
+    },
+    "12020800": {
+      "name": "Valiant Gargoyle & Valiant Gargoyle (Twinblade)"
+    },
+    "12020830": {
+      "name": "Dragonkin Soldier (Siofra River)"
+    },
+    "12020850": {
+      "name": "Mimic Tear"
+    },
+    "12030390": {
+      "name": "Crucible Knight Siluria"
+    },
+    "12030800": {
+      "name": "Fia's Champions"
+    },
+    "12030850": {
+      "name": "Lichdragon Fortissax"
+    },
+    "12040800": {
+      "name": "Astel, Naturalborn of the Void"
+    },
+    "12050800": {
+      "name": "Mohg, Lord of Blood"
+    },
+    "12080800": {
+      "name": "Ancestor Spirit"
+    },
+    "12090800": {
+      "name": "Regal Ancestor Spirit"
+    },
+    "13000800": {
+      "name": "Beast Clergyman / Maliketh, the Black Blade"
+    },
+    "13000830": {
+      "name": "Dragonlord Placidusax"
+    },
+    "13000850": {
+      "name": "Godskin Duo"
+    },
+    "14000800": {
+      "name": "Rennala, Queen of the Full Moon"
+    },
+    "14000850": {
+      "name": "Red Wolf of Radagon"
+    },
+    "15000800": {
+      "name": "Malenia, Blade of Miquella"
+    },
+    "15000850": {
+      "name": "Loretta, Knight of the Haligtree"
+    },
+    "16000800": {
+      "name": "God-Devouring Serpent / Rykard, Lord of Blasphemy"
+    },
+    "16000850": {
+      "name": "Godskin Noble"
+    },
+    "16000860": {
+      "name": "Abductor Virgins (Duo)"
+    },
+    "18000850": {
+      "name": "Soldier of Godrick"
+    },
+    "19000800": {
+      "name": "Radagon of the Golden Order / Elden Beast"
+    },
+    "30000800": {
+      "name": "Cemetery Shade (Weeping Peninsula)"
+    },
+    "30010800": {
+      "name": "Erdtree Burial Watchdog (Impaler's Catacombs)"
+    },
+    "30020800": {
+      "name": "Erdtree Burial Watchdog (Stormfoot Catacombs)"
+    },
+    "30030800": {
+      "name": "Spirit-Caller Snail"
+    },
+    "30040800": {
+      "name": "Grave Warden Duelist (Limgrave)"
+    },
+    "30050800": {
+      "name": "Cemetery Shade (Bellum Highway)"
+    },
+    "30050850": {
+      "name": "Black Knife Assassin (Bellum Highway)"
+    },
+    "30060800": {
+      "name": "Erdtree Burial Watchdog (Liurnia of the Lakes)"
+    },
+    "30070800": {
+      "name": "Erdtree Burial Watchdog (Duo)"
+    },
+    "30080800": {
+      "name": "Ancient Hero of Zamor (Altus Plateau)"
+    },
+    "30090800": {
+      "name": "Red Wolf of the Champion"
+    },
+    "30100800": {
+      "name": "Crucible Knight & Crucible Knight Ordovis"
+    },
+    "30110800": {
+      "name": "Black Knife Assassin (Stormhill)"
+    },
+    "30120800": {
+      "name": "Perfumer Tricia and Misbegotten Warrior"
+    },
+    "30130800": {
+      "name": "Grave Warden Duelist (Capital Outskirts)"
+    },
+    "30140800": {
+      "name": "Erdtree Burial Watchdog (Caelid)"
+    },
+    "30170800": {
+      "name": "Ancient Hero of Zamor (Flame Peak)"
+    },
+    "30180800": {
+      "name": "Ulcerated Tree Spirit (Mountaintops of the Giants)"
+    },
+    "30190800": {
+      "name": "Putrid Grave Warden Duelist"
+    },
+    "30200800": {
+      "name": "Stray Mimic Tear"
+    },
+    "31000800": {
+      "name": "Patches"
+    },
+    "31010800": {
+      "name": "Runebear"
+    },
+    "31020800": {
+      "name": "Miranda the Blighted Bloom"
+    },
+    "31030800": {
+      "name": "Beastman of Farum Azula"
+    },
+    "31040800": {
+      "name": "Cleanrot Knight"
+    },
+    "31050800": {
+      "name": "Bloodhound Knight"
+    },
+    "31060800": {
+      "name": "Crystalian Spear & Crystalian Staff (Duo)"
+    },
+    "31070800": {
+      "name": "Kindred of Rot Duo"
+    },
+    "31090800": {
+      "name": "Demi-Human Queen Margot"
+    },
+    "31100800": {
+      "name": "Beastman of Farum Azula (Duo)"
+    },
+    "31110800": {
+      "name": "Putrid Crystalian Trio"
+    },
+    "31120800": {
+      "name": "Misbegotten Crusader"
+    },
+    "31150800": {
+      "name": "Demi-Human Chiefs"
+    },
+    "31170800": {
+      "name": "Guardian Golem"
+    },
+    "31180800": {
+      "name": "Omenkiller & Miranda the Blighted Bloom"
+    },
+    "31190800": {
+      "name": "Black Knife Assassin (Sage's Cave)"
+    },
+    "31190850": {
+      "name": "Necromancer Garris"
+    },
+    "31210800": {
+      "name": "Frenzied Duelist"
+    },
+    "31220800": {
+      "name": "Godskin Apostle and Godskin Noble (Spiritcaller Snail)"
+    },
+    "32010800": {
+      "name": "Stonedigger Troll (Limgrave)"
+    },
+    "32020800": {
+      "name": "Crystalian"
+    },
+    "32040800": {
+      "name": "Stonedigger Troll (Altus Plateau)"
+    },
+    "32050800": {
+      "name": "Crystalian Spear & Crystalian Ringblade"
+    },
+    "32070800": {
+      "name": "Magma Wyrm"
+    },
+    "32080800": {
+      "name": "Fallingstar Beast (Caelid)"
+    },
+    "32110800": {
+      "name": "Astel, Stars of Darkness"
+    },
+    "34130800": {
+      "name": "Godskin Apostle (Greyoll's Dragonbarrow)"
+    },
+    "34140850": {
+      "name": "Fell Twins"
+    },
+    "35000800": {
+      "name": "Mohg, the Omen"
+    },
+    "39200800": {
+      "name": "Magma Wyrm Makar"
+    },
+    "1033420800": {
+      "name": "Alecto, Black Knife Ringleader"
+    },
+    "1033430800": {
+      "name": "Erdtree Avatar (Liurnia Southwest)"
+    },
+    "1033450800": {
+      "name": "Bols, Carian Knight"
+    },
+    "1034450800": {
+      "name": "Glintstone Dragon Smarag"
+    },
+    "1034480800": {
+      "name": "Royal Revenant"
+    },
+    "1034500800": {
+      "name": "Glintstone Dragon Adula (Moonlight Altar)"
+    },
+    "1035420800": {
+      "name": "Omenkiller"
+    },
+    "1035500800": {
+      "name": "Royal Knight Loretta"
+    },
+    "1035530800": {
+      "name": "Magma Wyrm (Fort Laiedd)"
+    },
+    "1036450800": {
+      "name": "Death Rite Bird (Liurnia of the Lakes)"
+    },
+    "1036480800": {
+      "name": "Night's Cavalry (Liurnia South)"
+    },
+    "1036500800": {
+      "name": "Onyx Lord (Liurnia of the Lakes)"
+    },
+    "1036540800": {
+      "name": "Full-Grown Fallingstar Beast"
+    },
+    "1037420800": {
+      "name": "Deathbird (Liurnia of the Lakes)"
+    },
+    "1037460800": {
+      "name": "Bell Bearing Hunter (Liurnia of the Lakes)"
+    },
+    "1037530800": {
+      "name": "Demi-Human Queen Maggie"
+    },
+    "1037540810": {
+      "name": "Ulcerated Tree Spirit (Mt. Gelmir)"
+    },
+    "1038410800": {
+      "name": "Adan, Thief of Fire"
+    },
+    "1038480800": {
+      "name": "Erdtree Avatar (Liurnia Northeast)"
+    },
+    "1038510800": {
+      "name": "Demi-Human Queen Gilika"
+    },
+    "1038520800": {
+      "name": "Tibia Mariner (Altus Plateau)"
+    },
+    "1039430800": {
+      "name": "Night's Cavalry (Liurnia North)"
+    },
+    "1039500800": {
+      "name": "Godefroy the Grafted"
+    },
+    "1039510800": {
+      "name": "Night's Cavalry (Altus Plateau)"
+    },
+    "1039540800": {
+      "name": "Elemer of the Briar"
+    },
+    "1040520800": {
+      "name": "Black Knife Assassin (Sainted Hero's Grave)"
+    },
+    "1040530800": {
+      "name": "Sanguine Noble"
+    },
+    "1041500800": {
+      "name": "Fallingstar Beast (Altus Plateau)"
+    },
+    "1041510800": {
+      "name": "Tree Sentinel Duo"
+    },
+    "1042330800": {
+      "name": "Ancient Hero of Zamor (Weeping Peninsula)"
+    },
+    "1042360800": {
+      "name": "Tree Sentinel"
+    },
+    "1042370800": {
+      "name": "Crucible Knight"
+    },
+    "1042380800": {
+      "name": "Deathbird (Stormhill)"
+    },
+    "1042380850": {
+      "name": "Bell Bearing Hunter (Stormhill)"
+    },
+    "1042550800": {
+      "name": "Godskin Apostle (Altus Plateau)"
+    },
+    "1043300800": {
+      "name": "Leonine Misbegotten"
+    },
+    "1043330800": {
+      "name": "Erdtree Avatar (Weeping Peninsula)"
+    },
+    "1043360800": {
+      "name": "Flying Dragon Agheel"
+    },
+    "1043370800": {
+      "name": "Night's Cavalry (Limgrave)"
+    },
+    "1043530800": {
+      "name": "Bell Bearing Hunter (Capital Outskirts)"
+    },
+    "1044320800": {
+      "name": "Deathbird (Weeping Peninsula)"
+    },
+    "1044320850": {
+      "name": "Night's Cavalry (Weeping Peninsula)"
+    },
+    "1044350800": {
+      "name": "Bloodhound Knight Darriwil"
+    },
+    "1044360800": {
+      "name": "Mad Pumpkin Head"
+    },
+    "1045390800": {
+      "name": "Tibia Mariner (Limgrave)"
+    },
+    "1045520800": {
+      "name": "Draconic Tree Sentinel"
+    },
+    "1047400800": {
+      "name": "Putrid Avatar (Caelid)"
+    },
+    "1048370800": {
+      "name": "Decaying Ekzykes"
+    },
+    "1048400800": {
+      "name": "Mad Pumpkin Heads"
+    },
+    "1048410800": {
+      "name": "Bell Bearing Hunter (Greyoll's Dragonbarrow)"
+    },
+    "1048510800": {
+      "name": "Night's Cavalry (Forbidden Lands)"
+    },
+    "1048570800": {
+      "name": "Death Rite Bird (Consecrated Snowfield)"
+    },
+    "1049370800": {
+      "name": "Night's Cavalry (Caelid)"
+    },
+    "1049370850": {
+      "name": "Death Rite Bird (Caelid)"
+    },
+    "1049380800": {
+      "name": "Commander O'Neil"
+    },
+    "1049390800": {
+      "name": "Nox Swordstress & Nox Monk"
+    },
+    "1049390850": {
+      "name": "Battlemage Hugues"
+    },
+    "1049520800": {
+      "name": "Black Blade Kindred (Forbidden Lands)"
+    },
+    "1050400800": {
+      "name": "Elder Dragon Greyoll"
+    },
+    "1050560800": {
+      "name": "Great Wyrm Theodorix"
+    },
+    "1050570800": {
+      "name": "Death Rite Bird (Mountaintops of the Giants)"
+    },
+    "1050570850": {
+      "name": "Putrid Avatar (Consecrated Snowfield)"
+    },
+    "1051360800": {
+      "name": "Crucible Knight and Misbegotten Warrior"
+    },
+    "1051430800": {
+      "name": "Black Blade Kindred (Greyoll's Dragonbarrow)"
+    },
+    "1051570800": {
+      "name": "Commander Niall"
+    },
+    "1052410800": {
+      "name": "Flying Dragon Greyll"
+    },
+    "1052410850": {
+      "name": "Night's Cavalry (Dragonbarrow)"
+    },
+    "1052560800": {
+      "name": "Erdtree Avatar (Mountaintops of the Giants)"
+    },
+    "1053560800": {
+      "name": "Vyke, Knight of the Roundtable"
+    },
+    "1248550800": {
+      "name": "Night's Cavalry (Consecrated Snowfield, Duo)"
+    },
+    "1254560800": {
+      "name": "Borealis the Freezing Fog"
+    },
+    "18000800": {
+      "name": "Ulcerated Tree Spirit (Limgrave)"
+    },
+    "32000800": {
+      "name": "Scaly Misbegotten"
+    },
+    "1039440800": {
+      "name": "Tibia Mariner (Liurnia of the Lakes)"
+    },
+    "1034420800": {
+      "name": "Glintstone Dragon Adula"
+    },
+    "30150800": {
+      "name": "Cemetery Shade (Caelid)"
+    },
+    "31200800": {
+      "name": "Cleanrot Knight (Duo)"
+    },
+    "1051400800": {
+      "name": "Putrid Avatar (Greyoll's Dragonbarrow)"
+    },
+    "30160800": {
+      "name": "Putrid Tree Spirit"
+    },
+    "1252380800": {
+      "name": "Starscourge Radahn"
+    },
+    "1037510800": {
+      "name": "Ancient Dragon Lansseax"
+    },
+    "1041530800": {
+      "name": "Wormface"
+    },
+    "1044530800": {
+      "name": "Deathbird (Capital Outskirts)"
+    },
+    "34120800": {
+      "name": "Onyx Lord (Capital Outskirts)"
+    },
+    "35000850": {
+      "name": "Esgar, Priest of Blood"
+    },
+    "1252520800": {
+      "name": "Fire Giant"
+    }
+  },
+  "not-found": {
+    "WHY": "Grand Archives doesn't have accessible IDs for these",
+    "bosses": [
+      "Patches (NPC questline, not a standard boss flag)"
+    ]
+  }
+}

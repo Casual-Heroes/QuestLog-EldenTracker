@@ -24,6 +24,7 @@ class BossTracker:
                 "group":    group,
                 "defeated": False,
                 "tier":     tier,
+                "deaths":   0,
             }
         self._load()
 
@@ -35,6 +36,7 @@ class BossTracker:
                 for key, state in saved.items():
                     if key in self.bosses:
                         self.bosses[key]["defeated"] = state.get("defeated", False)
+                        self.bosses[key]["deaths"] = int(state.get("deaths", 0) or 0)
             except Exception:
                 pass
 
@@ -42,7 +44,10 @@ class BossTracker:
         os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
         with open(self._state_file, "w") as f:
             json.dump(
-                {k: {"defeated": v["defeated"]} for k, v in self.bosses.items()},
+                {
+                    k: {"defeated": v["defeated"], "deaths": int(v.get("deaths", 0) or 0)}
+                    for k, v in self.bosses.items()
+                },
                 f, indent=2,
             )
 
@@ -79,6 +84,7 @@ class BossTracker:
                 "group":    d["group"],
                 "defeated": d["defeated"],
                 "tier":     d["tier"],
+                "deaths":   int(d.get("deaths", 0) or 0),
             }
             for key, d in self.bosses.items()
         ]

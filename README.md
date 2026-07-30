@@ -143,6 +143,8 @@ data/                 — runtime data, not committed (runs, logs, settings, bui
 
 GNU General Public License v3.0 — free to use and modify, but any derivative work must also be open source under the same license.
 
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for credits, compatibility notes, and third-party resource attribution for Elden Ring, Elden Ring Reforged, ERR Debug Tool Resources, Elden Ring Debug Tool, and bundled offline catalog data.
+
 ---
 
 *QuestLog EldenTracker is a [Casual Heroes](https://questlog.casual-heroes.com) project. Not affiliated with FromSoftware or any game publisher.*

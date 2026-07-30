@@ -1,0 +1,88 @@
+364000 Lazuli Sorcerer Ashes
+364002 Lazuli Sorcerer Ashes +1
+364004 Lazuli Sorcerer Ashes +2
+364006 Lazuli Sorcerer Ashes +3
+364008 Lazuli Sorcerer Ashes +4
+364010 Lazuli Sorcerer Ashes +5
+364012 Lazuli Sorcerer Ashes +6
+364014 Lazuli Sorcerer Ashes +7
+364016 Lazuli Sorcerer Ashes +8
+364018 Lazuli Sorcerer Ashes +9
+364020 Lazuli Sorcerer Ashes +10
+365000 Blaidd the Half-Wolf
+365002 Blaidd the Half-Wolf +1
+365004 Blaidd the Half-Wolf +2
+365006 Blaidd the Half-Wolf +3
+365008 Blaidd the Half-Wolf +4
+365010 Blaidd the Half-Wolf +5
+365012 Blaidd the Half-Wolf +6
+365014 Blaidd the Half-Wolf +7
+365016 Blaidd the Half-Wolf +8
+365018 Blaidd the Half-Wolf +9
+365020 Blaidd the Half-Wolf +10
+366000 Latenna and Lobo
+366002 Latenna and Lobo +1
+366004 Latenna and Lobo +2
+366006 Latenna and Lobo +3
+366008 Latenna and Lobo +4
+366010 Latenna and Lobo +5
+366012 Latenna and Lobo +6
+366014 Latenna and Lobo +7
+366016 Latenna and Lobo +8
+366018 Latenna and Lobo +9
+366020 Latenna and Lobo +10
+367000 Zamor Knight Lyedna
+367002 Zamor Knight Lyedna +1
+367004 Zamor Knight Lyedna +2
+367006 Zamor Knight Lyedna +3
+367008 Zamor Knight Lyedna +4
+367010 Zamor Knight Lyedna +5
+367012 Zamor Knight Lyedna +6
+367014 Zamor Knight Lyedna +7
+367016 Zamor Knight Lyedna +8
+367018 Zamor Knight Lyedna +9
+367020 Zamor Knight Lyedna +10
+368000 Starcaller Ashes
+368002 Starcaller Ashes +1
+368004 Starcaller Ashes +2
+368006 Starcaller Ashes +3
+368008 Starcaller Ashes +4
+368010 Starcaller Ashes +5
+368012 Starcaller Ashes +6
+368014 Starcaller Ashes +7
+368016 Starcaller Ashes +8
+368018 Starcaller Ashes +9
+368020 Starcaller Ashes +10
+369000 Glintstone Miner Ashes
+369002 Glintstone Miner Ashes +1
+369004 Glintstone Miner Ashes +2
+369006 Glintstone Miner Ashes +3
+369008 Glintstone Miner Ashes +4
+369010 Glintstone Miner Ashes +5
+369012 Glintstone Miner Ashes +6
+369014 Glintstone Miner Ashes +7
+369016 Glintstone Miner Ashes +8
+369018 Glintstone Miner Ashes +9
+369020 Glintstone Miner Ashes +10
+386000 Ringmaster Ophidion
+386002 Ringmaster Ophidion +1
+386004 Ringmaster Ophidion +2
+386006 Ringmaster Ophidion +3
+386008 Ringmaster Ophidion +4
+386010 Ringmaster Ophidion +5
+386012 Ringmaster Ophidion +6
+386014 Ringmaster Ophidion +7
+386016 Ringmaster Ophidion +8
+386018 Ringmaster Ophidion +9
+386020 Ringmaster Ophidion +10
+391000 Grand Inquisitor Eli
+391002 Grand Inquisitor Eli +1
+391004 Grand Inquisitor Eli +2
+391006 Grand Inquisitor Eli +3
+391008 Grand Inquisitor Eli +4
+391010 Grand Inquisitor Eli +5
+391012 Grand Inquisitor Eli +6
+391014 Grand Inquisitor Eli +7
+391016 Grand Inquisitor Eli +8
+391018 Grand Inquisitor Eli +9
+391020 Grand Inquisitor Eli +10
