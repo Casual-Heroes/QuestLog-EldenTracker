@@ -6,19 +6,31 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QScrollArea, QLabel, QCheckBox, QLineEdit,
     QPushButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QSlider, QSpacerItem, QDialog
+    QSlider, QSpacerItem, QDialog, QGridLayout, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QUrl
-from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QDesktopServices, QIcon
+from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QDesktopServices, QIcon, QImageReader
 
 from core.paths import assets as _assets_path, data as _data_path
 LOGO_QL     = _assets_path("QL1.png")
 LOGO_QL_ICO = _assets_path("QL1.ico")
 LOGO_CH     = _assets_path("CH.png")
 LOGO_CH_ICO = _assets_path("CH.ico")
+
+
+def _load_pixmap(*paths: str) -> QPixmap:
+    for path in paths:
+        pix = QPixmap(path)
+        if not pix.isNull():
+            return pix
+        reader = QImageReader(path)
+        image = reader.read()
+        if not image.isNull():
+            return QPixmap.fromImage(image)
+    return QPixmap()
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
-APP_VERSION = "1.0.2c"
+APP_VERSION = "1.1.0"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -155,6 +167,9 @@ QSlider::sub-page:horizontal {{
 class BossRow(QWidget):
     # state: 'idle' | 'focusing' | 'defeated'
     tapped = pyqtSignal(str, str, str)   # key, name, new_state
+    unfocused = pyqtSignal(str, str)     # key, name -- right-click: back to idle without touching defeated/kill state
+    clear_deaths_requested = pyqtSignal(str, str)  # key, name -- death badge clicked
+    deaths_cleared = pyqtSignal()        # server confirmed clear -- safe to zero the badge (may fire from a bg thread via Qt's queued connection)
 
     # Keep toggled as alias so refresh() still works
     toggled = pyqtSignal(str, bool)
@@ -179,6 +194,25 @@ class BossRow(QWidget):
         self.name_lbl.setFont(QFont("Palatino Linotype", 11))
         self.name_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+        # Death-count pill (e.g. "5 💀") -- click to clear mis-attributed
+        # deaths for this boss (server's boss/clear-deaths/, does NOT touch
+        # Total Deaths). Hidden until set_death_count() reports count > 0.
+        self._death_count = 0
+        self.death_badge = QPushButton()
+        self.death_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.death_badge.setFixedHeight(22)
+        self.death_badge.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self.death_badge.setStyleSheet(
+            f"QPushButton {{ background: rgba(239,68,68,0.15); color: {RED_LIVE}; "
+            f"border: 1px solid {RED_DIM}; border-radius: 4px; padding: 0 8px; }}"
+            f"QPushButton:hover {{ background: rgba(239,68,68,0.3); }}"
+        )
+        self.death_badge.setVisible(False)
+        self.death_badge.setToolTip("Click to clear death attribution for this boss (doesn't affect Total Deaths)")
+        self.death_badge.clicked.connect(
+            lambda: self.clear_deaths_requested.emit(self.key, self._name)
+        )
+
         self.badge = QLabel()
         self.badge.setFixedWidth(80)
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -187,9 +221,18 @@ class BossRow(QWidget):
 
         layout.addWidget(self._dot)
         layout.addWidget(self.name_lbl)
+        layout.addWidget(self.death_badge)
         layout.addWidget(self.badge)
 
         self._apply_state(self._state)
+
+    def set_death_count(self, count):
+        self._death_count = count
+        if count > 0:
+            self.death_badge.setText(f"{count} \U0001F480")
+            self.death_badge.setVisible(True)
+        else:
+            self.death_badge.setVisible(False)
 
     def _apply_state(self, state):
         if state == "defeated":
@@ -212,6 +255,15 @@ class BossRow(QWidget):
             self.badge.setStyleSheet(f"background: {RED_DIM}44; color: {RED_LIVE}; border: 1px solid {RED_DIM}; border-radius: 4px; padding: 0 6px; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            # Right-click: instant unfocus, no cycling required to back out
+            # of "focusing". Only meaningful while actively focused -- does
+            # NOT touch defeated/kill state, unlike the left-click cycle's
+            # idle step (which is really "undo defeat").
+            if self._state == "focusing":
+                self.set_state("idle")
+                self.unfocused.emit(self.key, self._name)
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             return
         # 3-state cycle: idle → focusing → defeated → idle
@@ -274,6 +326,7 @@ class BossTab(QWidget):
         self._ql_sync      = ql_sync       # QuestLogSync instance for focus/unmark calls
         self._on_boss_mark = on_boss_mark  # callback(boss_key) → fires mark_boss, returns rage data
         self.rows = []
+        self._focused_key = None  # key of the currently-focused BossRow, if any -- lets hotkey-driven focus/unfocus find and restyle the right row without a click event
         self.region_headers = {}
         self._accent = accent or ACCENT_GOLD
 
@@ -323,14 +376,22 @@ class BossTab(QWidget):
         self.prog_fill.setFixedWidth(0)
         outer.addWidget(self.prog_track)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Internal capped-height QScrollArea, matching the site: Boss
+        # Progress is its own scrollable box (not the full boss list flowing
+        # into the page), so the outer RunOverviewTab page stays a
+        # reasonable length and Items doesn't end up dozens of screens down.
         container = QWidget()
         container.setStyleSheet(f"background: {BG_BASE};")
         self.list_layout = QVBoxLayout(container)
         self.list_layout.setContentsMargins(0, 8, 0, 8)
         self.list_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(360)
+        scroll.setWidget(container)
 
         from collections import OrderedDict
         by_location = OrderedDict()
@@ -345,6 +406,9 @@ class BossTab(QWidget):
             for b in loc_bosses:
                 row = BossRow(b["key"], b["name"], b["location"], b["defeated"])
                 row.tapped.connect(self._on_tapped)
+                row.unfocused.connect(self._on_unfocused)
+                row.clear_deaths_requested.connect(self._on_clear_deaths_requested)
+                row.deaths_cleared.connect(lambda r=row: r.set_death_count(0))
                 self.list_layout.addWidget(row)
                 self.rows.append(row)
                 self.region_headers[location]["rows"].append(row)
@@ -355,7 +419,6 @@ class BossTab(QWidget):
             self.list_layout.addWidget(spacer)
 
         self.list_layout.addStretch()
-        scroll.setWidget(container)
         outer.addWidget(scroll)
 
         self._update_progress()
@@ -367,17 +430,23 @@ class BossTab(QWidget):
     def _on_tapped(self, key, name, new_state):
         import threading
         if new_state == "focusing":
-            # Tap 1: set focus — send boss_name (human label, not key)
+            # Tap 1: set focus — send both boss_name (human label) and boss_key
+            # (unique identifier). boss_key matters: several bosses share a
+            # boss_name across different locations (e.g. "Erdtree Avatar" in
+            # 6 different areas) -- name alone lets death attribution bleed
+            # across unrelated fights.
             self._focus_lbl.setText(f"  ⚔ Fighting: {name}")
             self._focus_banner.setVisible(True)
+            self._focused_key = key
             if self._ql_sync:
-                threading.Thread(target=self._ql_sync.set_focus, args=(name,), daemon=True).start()
+                threading.Thread(target=self._ql_sync.set_focus, args=(name, key), daemon=True).start()
 
         elif new_state == "defeated":
             # Tap 2: mark defeated — send boss_key ("Name (Location)")
             self._focus_banner.setVisible(False)
+            self._focused_key = None
             self.boss_tracker.mark_defeated(key)
-            if self.on_kill:
+            if self.on_kill and not self._ql_sync:
                 self.on_kill(tier=self.boss_tracker.get_tier(key))
             if self._on_boss_mark:
                 self._on_boss_mark(key)   # handles mark_boss + rage update
@@ -387,12 +456,105 @@ class BossTab(QWidget):
         else:  # idle — undo defeat
             # Tap 3: unmark — send boss_key, clear focus
             self._focus_banner.setVisible(False)
+            self._focused_key = None
             self.boss_tracker.mark_undefeated(key)
             if self._ql_sync:
                 threading.Thread(target=self._ql_sync.unmark_boss, args=(key,), daemon=True).start()
                 threading.Thread(target=self._ql_sync.clear_focus, daemon=True).start()
 
         self._update_progress()
+
+    def _on_unfocused(self, key, name):
+        """
+        Right-click on a FIGHTING row: back out of focus instantly, no death/
+        kill/defeat state touched -- distinct from the left-click idle step
+        above (which is "undo defeat"). Matches the doc's "right-click a
+        focused boss = instant unfocus" UX.
+        """
+        self._focus_banner.setVisible(False)
+        self._focused_key = None
+        if self._ql_sync:
+            threading.Thread(target=self._ql_sync.clear_focus, daemon=True).start()
+
+    def _on_clear_deaths_requested(self, key, name):
+        """
+        Death badge clicked: clear mis-attributed deaths for this boss
+        (server's boss/clear-deaths/). Does NOT touch Total Deaths -- the
+        deaths still happened, only the boss tag on them was wrong (mis-
+        click, testing, wrong boss picked). Confirm first since this can't
+        be undone from the UI.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Clear boss deaths?",
+            f"Clear death attribution for \"{name}\"?\n\n"
+            "This removes the death count shown on this boss, but does NOT "
+            "reduce your Total Deaths -- those deaths still happened, only "
+            "the boss tag was wrong.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._ql_sync:
+            row = next((r for r in self.rows if r.key == key), None)
+            def _on_done(_resp):
+                # Runs on the sync's background thread -- emit a signal
+                # rather than touching the widget directly (Qt signals
+                # crossing threads are queued to the receiving object's
+                # thread automatically, unlike a raw method call).
+                if row:
+                    row.deaths_cleared.emit()
+            self._ql_sync.clear_boss_deaths(key, on_done=_on_done)
+
+    def focus_boss(self, key, name):
+        """
+        Programmatic focus (e.g. from the focus hotkey's picker dialog) --
+        same effect as clicking a row into "focusing" state, including
+        restyling that row. Unfocuses whatever was previously focused first
+        (only one boss can be focused at a time).
+        """
+        import threading
+        if self._focused_key and self._focused_key != key:
+            for row in self.rows:
+                if row.key == self._focused_key and row._state == "focusing":
+                    row.set_state("idle")
+        for row in self.rows:
+            if row.key == key:
+                row.set_state("focusing")
+        self._focus_lbl.setText(f"  ⚔ Fighting: {name}")
+        self._focus_banner.setVisible(True)
+        self._focused_key = key
+        if self._ql_sync:
+            threading.Thread(target=self._ql_sync.set_focus, args=(name, key), daemon=True).start()
+
+    def unfocus_current(self):
+        """Programmatic unfocus (e.g. from the unfocus hotkey) -- no-op if nothing is focused."""
+        import threading
+        if not self._focused_key:
+            return
+        for row in self.rows:
+            if row.key == self._focused_key and row._state == "focusing":
+                row.set_state("idle")
+        self._focus_banner.setVisible(False)
+        self._focused_key = None
+        if self._ql_sync:
+            threading.Thread(target=self._ql_sync.clear_focus, daemon=True).start()
+
+    def defeat_current(self):
+        """Programmatic kill confirm -- marks the focused boss defeated."""
+        if not self._focused_key:
+            return False
+        for row in self.rows:
+            if row.key == self._focused_key:
+                row.set_state("defeated")
+                self._on_tapped(row.key, row._name, "defeated")
+                return True
+        return False
+
+    def undefeated_bosses(self):
+        """Returns [(key, name), ...] for bosses not yet marked defeated -- feeds the focus picker dialog."""
+        return [(row.key, row._name) for row in self.rows if row._state != "defeated"]
 
     def _filter(self, query):
         for row in self.rows:
@@ -419,46 +581,289 @@ class BossTab(QWidget):
         self.prog_fill.setFixedWidth(int(self.prog_track.width() * pct))
 
     def refresh(self, boss_list):
-        lookup = {b["key"]: b["defeated"] for b in boss_list}
+        lookup = {b["key"]: b for b in boss_list}
         for row in self.rows:
-            if row.key in lookup:
-                defeated = lookup[row.key]
-                # Don't clobber "focusing" state with a refresh — only sync defeated/idle
-                if defeated and row._state != "defeated":
-                    row.set_state("defeated")
-                elif not defeated and row._state == "defeated":
-                    row.set_state("idle")
+            b = lookup.get(row.key)
+            if b is None:
+                continue
+            defeated = b["defeated"]
+            # Don't clobber "focusing" state with a refresh — only sync defeated/idle
+            if defeated and row._state != "defeated":
+                row.set_state("defeated")
+            elif not defeated and row._state == "defeated":
+                row.set_state("idle")
+            if "deaths" in b:
+                row.set_death_count(b["deaths"])
         self._update_progress()
+
+
+class BossFocusPickerDialog(QDialog):
+    """
+    Focus hotkey opens this: a searchable list of undefeated bosses to focus
+    on, without needing to scroll to the right region tab and click the
+    row. Selecting an entry calls BossTab.focus_boss() the same as clicking
+    a row would. Only lists undefeated bosses -- a defeated boss isn't
+    something you'd need to focus on again.
+    """
+    def __init__(self, undefeated_bosses, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Focus Boss")
+        self.setMinimumSize(420, 480)
+        self.setStyleSheet(QSS)
+        self._selected = None  # (key, name), set on accept
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Which boss are you fighting?")
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {TEXT_PRIMARY};")
+        layout.addWidget(title)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search bosses...")
+        self.search.textChanged.connect(self._filter)
+        layout.addWidget(self.search)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border: none;")
+        container = QWidget()
+        self._list_layout = QVBoxLayout(container)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(0)
+
+        self._buttons = []
+        for key, name in undefeated_bosses:
+            btn = QPushButton(name)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    text-align: left; padding: 10px 12px; border: none;
+                    background: transparent; color: {TEXT_PRIMARY}; font-size: 13px;
+                }}
+                QPushButton:hover {{ background: {BG_CARD_HOVER}; }}
+            """)
+            btn.clicked.connect(lambda _, k=key, n=name: self._choose(k, n))
+            self._list_layout.addWidget(btn)
+            self._buttons.append((btn, name))
+
+        self._list_layout.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+        self.search.setFocus()
+
+    def _filter(self, query):
+        q = query.lower()
+        for btn, name in self._buttons:
+            btn.setVisible(q in name.lower())
+
+    def _choose(self, key, name):
+        self._selected = (key, name)
+        self.accept()
+
+    @staticmethod
+    def pick(undefeated_bosses, parent=None):
+        """Returns (key, name) if the user picked one, else None."""
+        dlg = BossFocusPickerDialog(undefeated_bosses, parent)
+        dlg.exec()
+        return dlg._selected
 
 
 class MortalityTab(QWidget):
     sig_add_death      = pyqtSignal()
     sig_subtract_death = pyqtSignal()
     sig_reset_deaths   = pyqtSignal()
+    sig_set_total_deaths = pyqtSignal(int)
+    sig_set_session_deaths = pyqtSignal(int)
     sig_reset_bosses   = pyqtSignal()
+    sig_focus_boss     = pyqtSignal()   # button equivalent of the focus hotkey -- opens the picker
+    sig_unfocus_boss   = pyqtSignal()   # button equivalent of the unfocus hotkey
+    sig_end_run        = pyqtSignal()   # explicit "End Run" -- ends server-side, keeps app/window open
+    sig_submit_leaderboard = pyqtSignal()   # "Submit to Leaderboard" -- only enabled once ended
 
     def __init__(self, session=None, deaths=None, rage_label="Rage Index", parent=None):
         super().__init__(parent)
         self._session = session
         self._deaths  = deaths
         self._rage_label = rage_label
+        self._ended     = False   # run has been explicitly ended (server-side + meta.json)
+        self._submitted = False   # run has been submitted to the leaderboard (one-shot)
+        self._can_submit = False  # whether Submit is even applicable (cloud-synced run w/ a token)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 28, 24, 24)
         outer.setSpacing(0)
 
-        # ── Deaths row ────────────────────────────────────────────
-        deaths_row = QHBoxLayout()
-        deaths_row.setSpacing(0)
+        # ── Stat card grid ────────────────────────────────────────
+        # Matches the site's layout exactly: TOTAL DEATHS / THIS SESSION /
+        # DEATHS-BOSS, CURRENT BOSS / BOSS DEATHS / EVERYTHING ELSE,
+        # DEATHS-HR SESSION / DEATHS-HR RUN, CURRENT STREAK / LONGEST LIFE /
+        # ITEMS FOUND, SESSION TIME / RUN DURATION -- 3 cards per row where
+        # the site has 3, 2 where the site has 2. CompactStatsBar (the thin
+        # strip above the tabs) was removed entirely since the site has no
+        # equivalent element -- this grid is the ONLY place these numbers
+        # live now, not a duplicate of a second summary bar.
+        grid = QGridLayout()
+        grid.setSpacing(16)
 
-        self._session_card = self._make_stat_card("SESSION DEATHS", "0")
-        self._total_card   = self._make_stat_card("TOTAL DEATHS", "0")
-        deaths_row.addWidget(self._session_card)
-        deaths_row.addSpacing(16)
-        deaths_row.addWidget(self._total_card)
-        outer.addLayout(deaths_row)
+        self._total_card       = self._make_stat_card("TOTAL DEATHS", "0")
+        self._session_card     = self._make_stat_card("THIS SESSION", "0")
+        self._dhr_card         = self._make_stat_card("DEATHS / BOSS", "--")
+        self._current_boss_card = self._make_stat_card("CURRENT BOSS", "0")
+        self._boss_deaths_card = self._make_stat_card("BOSS DEATHS", "0")
+        self._non_boss_deaths_card = self._make_stat_card("EVERYTHING ELSE", "0")
+        self._session_dph_card = self._make_stat_card("DEATHS / HR (SESSION)", "--")
+        self._run_dph_card     = self._make_stat_card("DEATHS / HR (RUN)", "--")
+        self._streak_card      = self._make_stat_card("CURRENT STREAK", "00:00:00")
+        self._longest_card     = self._make_stat_card("LONGEST LIFE", "00:00")
+        self._items_card       = self._make_stat_card("ITEMS FOUND", "0/0")
+        self._session_card2    = self._make_stat_card("SESSION TIME", "00:00:00")
+        self._survival_card    = self._make_stat_card("RUN DURATION", "--")
 
-        outer.addSpacing(24)
+        grid.addWidget(self._total_card, 0, 0)
+        grid.addWidget(self._session_card, 0, 1)
+        grid.addWidget(self._dhr_card, 0, 2)
+        grid.addWidget(self._current_boss_card, 1, 0)
+        grid.addWidget(self._boss_deaths_card, 1, 1)
+        grid.addWidget(self._non_boss_deaths_card, 1, 2)
+        grid.addWidget(self._session_dph_card, 2, 0)
+        grid.addWidget(self._run_dph_card, 2, 1)
+        grid.addWidget(self._streak_card, 3, 0)
+        grid.addWidget(self._longest_card, 3, 1)
+        grid.addWidget(self._items_card, 3, 2)
+        grid.addWidget(self._session_card2, 4, 0)
+        grid.addWidget(self._survival_card, 4, 1)
+        outer.addLayout(grid)
+
+        outer.addSpacing(20)
+
+        # ── Manual controls ───────────────────────────────────────
+        # Matches the site: one primary LOG DEATH button, then a
+        # secondary Undo / Full Reset row. Reset Bosses / Focus / Unfocus
+        # aren't shown on the site's equivalent page, but the desktop app
+        # still needs a UI path to them (mouse users without the hotkeys
+        # hotkeys) -- kept as a smaller row below the site-matching buttons
+        # rather than dropped, since that functionality has no other home.
+        def _action_btn(label, color=None):
+            btn = QPushButton(label)
+            btn.setFixedHeight(36)
+            base = color or BG_SURFACE
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {base};
+                    color: {TEXT_PRIMARY};
+                    border: 1px solid {BORDER_SOLID};
+                    border-radius: 6px;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{ background: {BG_CARD_HOVER}; border-color: {ACCENT_GOLD}; }}
+                QPushButton:pressed {{ background: {BG_BASE}; }}
+            """)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            return btn
+
+        # One row -- LOG DEATH (wide, red) + Undo + Full Reset side by side,
+        # matching the site exactly (not LOG DEATH as its own full-width row
+        # above a separate Undo/Reset row).
+        self.log_death_btn = QPushButton("💀  LOG DEATH")
+        self.log_death_btn.setFixedHeight(44)
+        self.log_death_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.log_death_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ACCENT_RED};
+                color: {TEXT_PRIMARY};
+                border: 1px solid {ACCENT_RED2};
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: #d94418; }}
+            QPushButton:pressed {{ background: {ACCENT_RED2}; }}
+            QPushButton:disabled {{ background: {BG_SURFACE}; color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self.log_death_btn.clicked.connect(self.sig_add_death)
+
+        self.undo_btn = _action_btn("↺ Undo")
+        self.undo_btn.setFixedHeight(44)
+        self.full_reset_btn = _action_btn("⟳ Full Reset")
+        self.full_reset_btn.setFixedHeight(44)
+        self.undo_btn.clicked.connect(self.sig_subtract_death)
+        self.full_reset_btn.clicked.connect(self.sig_reset_deaths)
+
+        undo_reset_row = QHBoxLayout()
+        undo_reset_row.setSpacing(8)
+        undo_reset_row.addWidget(self.log_death_btn, 2)
+        undo_reset_row.addWidget(self.undo_btn, 1)
+        undo_reset_row.addWidget(self.full_reset_btn, 1)
+        outer.addLayout(undo_reset_row)
+
+        outer.addSpacing(8)
+
+        secondary_row = QHBoxLayout()
+        secondary_row.setSpacing(8)
+        self.reset_bosses_btn = _action_btn("RESET BOSSES")
+        self.set_total_btn = _action_btn("SET TOTAL")
+        self.set_session_btn = _action_btn("SET SESSION")
+        focus_btn   = _action_btn("⚔ FOCUS BOSS")
+        unfocus_btn = _action_btn("UNFOCUS")
+        self.reset_bosses_btn.clicked.connect(self.sig_reset_bosses)
+        self.set_total_btn.clicked.connect(self._prompt_set_total_deaths)
+        self.set_session_btn.clicked.connect(self._prompt_set_session_deaths)
+        focus_btn.clicked.connect(self.sig_focus_boss)
+        unfocus_btn.clicked.connect(self.sig_unfocus_boss)
+        secondary_row.addWidget(self.reset_bosses_btn)
+        secondary_row.addWidget(self.set_total_btn)
+        secondary_row.addWidget(self.set_session_btn)
+        secondary_row.addWidget(focus_btn)
+        secondary_row.addWidget(unfocus_btn)
+        outer.addLayout(secondary_row)
+
+        outer.addSpacing(8)
+
+        # ── End Run / Submit to Leaderboard ────────────────────────
+        # Distinct from SWITCH RUN (header button) / closing the window --
+        # those already end the run implicitly via App._stop_active(); this
+        # is an explicit, separate action that keeps the app/window open.
+        end_run_row = QHBoxLayout()
+        end_run_row.setSpacing(8)
+        self.end_run_btn = _action_btn("⏹ END RUN", color=BG_SURFACE)
+        self.end_run_btn.clicked.connect(self.sig_end_run)
+        self.submit_leaderboard_btn = _action_btn("🏆 SUBMIT TO LEADERBOARD", color=ACCENT_GOLD)
+        self.submit_leaderboard_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ACCENT_GOLD};
+                color: {BG_BASE};
+                border: 1px solid {ACCENT_GOLD2};
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: {ACCENT_GOLD2}; }}
+            QPushButton:pressed {{ background: {ACCENT_GOLD}; }}
+            QPushButton:disabled {{ background: {BG_SURFACE}; color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self.submit_leaderboard_btn.clicked.connect(self.sig_submit_leaderboard)
+        self.submit_leaderboard_btn.setVisible(False)   # only shown once ended
+        end_run_row.addWidget(self.end_run_btn, 1)
+        end_run_row.addWidget(self.submit_leaderboard_btn, 1)
+        outer.addLayout(end_run_row)
+
+        outer.addSpacing(12)
+
+        # ── Hotkey reminder ───────────────────────────────────────
+        hotkeys = QLabel("Hotkeys configurable in Settings tab")
+        hotkeys.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
+        hotkeys.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(hotkeys)
+
+        outer.addSpacing(20)
 
         # ── Rage bar ──────────────────────────────────────────────
         rage_label_row = QHBoxLayout()
@@ -504,78 +909,51 @@ class MortalityTab(QWidget):
 
         outer.addSpacing(28)
 
-        # ── Secondary stats row ───────────────────────────────────
-        secondary = QHBoxLayout()
-        secondary.setSpacing(0)
+    def _prompt_set_total_deaths(self):
+        current = self._session.total_deaths if self._session else 0
+        value, ok = QInputDialog.getInt(
+            self, "Set Total Deaths", "Total deaths:", int(current), 0, 999999, 1
+        )
+        if ok:
+            self.sig_set_total_deaths.emit(value)
 
-        self._dhr_card      = self._make_stat_card("DEATHS / BOSS", "0.0", sub="")
-        self._session_card2 = self._make_stat_card("SESSION TIME",  "00:00:00")
-        self._streak_card   = self._make_stat_card("CURRENT STREAK","00:00:00")
-        self._longest_card  = self._make_stat_card("LONGEST LIFE",  "00:00:00")
-        self._survival_card = self._make_stat_card("RUN DURATION", "--")
-        secondary.addWidget(self._dhr_card)
-        secondary.addSpacing(16)
-        secondary.addWidget(self._session_card2)
-        secondary.addSpacing(16)
-        secondary.addWidget(self._streak_card)
-        secondary.addSpacing(16)
-        secondary.addWidget(self._longest_card)
-        secondary.addSpacing(16)
-        secondary.addWidget(self._survival_card)
-        outer.addLayout(secondary)
+    def _prompt_set_session_deaths(self):
+        current = self._session.session_deaths if self._session else 0
+        value, ok = QInputDialog.getInt(
+            self, "Set Session Deaths", "Session deaths:", int(current), 0, 999999, 1
+        )
+        if ok:
+            self.sig_set_session_deaths.emit(value)
 
-        outer.addStretch()
+    def set_ended(self, ended: bool):
+        """
+        Reflects a run's ended state in the UI -- disables death-logging
+        controls (an ended run shouldn't accept new deaths) and reveals the
+        Submit button. Called both right after the user clicks END RUN and
+        when restoring a previously-ended run's state from meta.json on
+        load, so it must be idempotent / safe to call redundantly.
+        """
+        self._ended = ended
+        self.log_death_btn.setEnabled(not ended)
+        self.undo_btn.setEnabled(not ended)
+        self.full_reset_btn.setEnabled(not ended)
+        self.reset_bosses_btn.setEnabled(not ended)
+        self.set_total_btn.setEnabled(not ended)
+        self.set_session_btn.setEnabled(not ended)
+        self.end_run_btn.setEnabled(not ended)
+        self.end_run_btn.setText("ENDED" if ended else "⏹ END RUN")
+        self.submit_leaderboard_btn.setVisible(ended and self._can_submit and not self._submitted)
 
-        # ── Manual controls ───────────────────────────────────────
-        def _action_btn(label, color=None):
-            btn = QPushButton(label)
-            btn.setFixedHeight(36)
-            base = color or BG_SURFACE
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {base};
-                    color: {TEXT_PRIMARY};
-                    border: 1px solid {BORDER_SOLID};
-                    border-radius: 6px;
-                    font-size: 11px;
-                    font-weight: 700;
-                    letter-spacing: 1px;
-                }}
-                QPushButton:hover {{ background: {BG_CARD_HOVER}; border-color: {ACCENT_GOLD}; }}
-                QPushButton:pressed {{ background: {BG_BASE}; }}
-            """)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            return btn
+    def set_can_submit(self, can_submit: bool):
+        """Whether Submit is even applicable -- only cloud-synced runs with a questlog_token."""
+        self._can_submit = can_submit
+        self.submit_leaderboard_btn.setVisible(self._ended and can_submit and not self._submitted)
 
-        death_row = QHBoxLayout()
-        death_row.setSpacing(8)
-        add_btn = _action_btn("+ ADD DEATH")
-        sub_btn = _action_btn("− SUBTRACT DEATH")
-        add_btn.clicked.connect(self.sig_add_death)
-        sub_btn.clicked.connect(self.sig_subtract_death)
-        death_row.addWidget(add_btn)
-        death_row.addWidget(sub_btn)
-        outer.addLayout(death_row)
-
-        outer.addSpacing(8)
-
-        reset_row = QHBoxLayout()
-        reset_row.setSpacing(8)
-        reset_deaths_btn = _action_btn("RESET ALL DEATHS")
-        reset_bosses_btn = _action_btn("RESET BOSSES")
-        reset_deaths_btn.clicked.connect(self.sig_reset_deaths)
-        reset_bosses_btn.clicked.connect(self.sig_reset_bosses)
-        reset_row.addWidget(reset_deaths_btn)
-        reset_row.addWidget(reset_bosses_btn)
-        outer.addLayout(reset_row)
-
-        outer.addSpacing(12)
-
-        # ── Hotkey reminder ───────────────────────────────────────
-        hotkeys = QLabel("Hotkeys configurable in Settings tab")
-        hotkeys.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
-        hotkeys.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(hotkeys)
+    def set_submitted(self, submitted: bool):
+        self._submitted = submitted
+        if submitted:
+            self.submit_leaderboard_btn.setVisible(False)
+        self.submit_leaderboard_btn.setEnabled(not submitted)
 
     def _make_stat_card(self, label, value, sub=None):
         card = QWidget()
@@ -622,42 +1000,122 @@ class MortalityTab(QWidget):
         super().resizeEvent(event)
         self._update_rage_bar_width()
 
-    def _update_rage_bar_width(self):
+    def _update_rage_bar_width(self, pct_override=None):
         if self._deaths is None:
             return
-        pct = self._deaths._rage_pct / 100.0
+        pct = (self._deaths._rage_pct if pct_override is None else pct_override) / 100.0
         w   = int(self._rage_bar_track.width() * pct)
         self._rage_bar.setFixedWidth(max(0, w))
 
-    def update_timing(self, streak_sec, longest_sec, started_at=None):
+    def update_timing(self, streak_sec, longest_sec, started_at=None,
+                       lifetime_playtime_sec=None, server_authoritative=False):
         def _fmt(s):
             return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
         self._streak_card._value_lbl.setText(_fmt(streak_sec))
         self._longest_card._value_lbl.setText(_fmt(longest_sec))
-        self._survival_card._value_lbl.setText(_run_duration_display(started_at))
+        if server_authoritative:
+            # Server is the ONLY source of truth for Run Duration when
+            # connected -- it only accumulates while the listener is
+            # connected AND the game exe is detected running (see
+            # QuestLogSync/_heartbeat). Never fall back to local wall-clock
+            # math here: that math has no idea whether the exe is running,
+            # so it would silently tick every second the app window is
+            # open, exe or no exe -- exactly the bug this replaces. The
+            # server's raw seconds value is still the source of truth --
+            # only the day-formatting is done client-side (to match the
+            # site's "3d 13:35" display), since the server was sending a
+            # flat HH:MM:SS string with no day rollover.
+            if lifetime_playtime_sec is None:
+                self._survival_card._value_lbl.setText("--")
+            else:
+                self._survival_card._value_lbl.setText(_days_hours_display(lifetime_playtime_sec))
+        else:
+            self._survival_card._value_lbl.setText(_run_duration_display(started_at))
 
     def update_stats(self, session, deaths, ql_sync=None, bosses_defeated=0):
         self._session = session
         self._deaths  = deaths
 
-        self._session_card._value_lbl.setText(str(session.session_deaths))
         self._total_card._value_lbl.setText(str(session.total_deaths))
+        self._session_card._value_lbl.setText(str(session.session_deaths))
         self._session_card2._value_lbl.setText(session.elapsed_str())
+
         server_rate = ql_sync.get_true_death_rate() if ql_sync else None
         _dpb = server_rate if server_rate is not None else deaths.deaths_per_boss(bosses_defeated)
         self._dhr_card._value_lbl.setText(str(_dpb))
-        if self._dhr_card._sub_lbl is not None:
-            self._dhr_card._sub_lbl.setText(
-                f"{session.total_deaths} deaths / {bosses_defeated} bosses"
+
+        if ql_sync:
+            boss_deaths, non_boss_deaths = ql_sync.get_death_split()
+            self._boss_deaths_card._value_lbl.setText(str(boss_deaths))
+            self._non_boss_deaths_card._value_lbl.setText(str(non_boss_deaths))
+
+            session_dph, run_dph = ql_sync.get_deaths_per_hour()
+            if session_dph is None:
+                session_sec = ql_sync.session_time_sec()
+                if session_sec > 0:
+                    session_dph = session.session_deaths / (session_sec / 3600)
+            self._session_dph_card._value_lbl.setText(
+                f"{session_dph:.1f}" if session_dph is not None else "--"
+            )
+            self._run_dph_card._value_lbl.setText(
+                f"{run_dph:.1f}" if run_dph is not None else "--"
             )
 
-        pct, state, color = deaths.rage_state()
-        hollow = deaths.hollow_streak()
+            # CURRENT BOSS -- deaths against whichever boss is currently
+            # focused, 0 if nothing is focused right now (matches the site:
+            # this tile always shows a number, not the boss's name).
+            current_key = ql_sync.get_current_boss_key()
+            current_boss_deaths = 0
+            if current_key:
+                for b in ql_sync.get_bosses():
+                    if b.get("key") == current_key:
+                        current_boss_deaths = b.get("deaths", 0)
+                        break
+            self._current_boss_card._value_lbl.setText(str(current_boss_deaths))
+
+            items, collected, total = ql_sync.get_items()
+            self._items_card._value_lbl.setText(f"{collected}/{total}")
+        else:
+            session_sec = session.elapsed_seconds()
+            session_dph = session.session_deaths / (session_sec / 3600) if session_sec > 0 else None
+            self._session_dph_card._value_lbl.setText(
+                f"{session_dph:.1f}" if session_dph is not None else "--"
+            )
+            self._run_dph_card._value_lbl.setText("--")
+            self._boss_deaths_card._value_lbl.setText("0")
+            self._non_boss_deaths_card._value_lbl.setText(str(session.total_deaths))
+            self._current_boss_card._value_lbl.setText("0")
+
+        if ql_sync:
+            pct, state, hollow = ql_sync.get_rage_state()
+            pct = int(max(0, min(100, pct)))
+            if hollow > 0:
+                pct = 100
+                state = "HOLLOW"
+            if str(state).upper() == "HOLLOW" or pct >= 100:
+                color = "#FF0000"
+                state = "HOLLOW"
+            elif pct >= 75:
+                color = "#8B0000"
+            elif pct >= 50:
+                color = "#C0390F"
+            elif pct >= 25:
+                color = "#E07B00"
+            else:
+                color = "#C9A84C"
+        else:
+            pct, state, color = deaths.rage_state()
+            hollow = deaths.hollow_streak()
 
         self._rage_pct_lbl.setText(f"{pct}%")
-        self._rage_state_lbl.setText(state)
+        # State label now carries its own percentage inline (e.g. "Maiden's
+        # Grace · 0%") instead of relying on the reader to separately look at
+        # the header row's "0%" on the far right of the bar.
+        self._rage_state_lbl.setText(f"{state}  ·  {pct}%")
         self._rage_state_lbl.setStyleSheet(f"color: {color};")
 
+        if ql_sync and hollow > 0:
+            hollow += 1
         if hollow > 0:
             self._hollow_lbl.setText(f"Gone Hollow ×{hollow}")
             self._hollow_lbl.setVisible(True)
@@ -667,7 +1125,7 @@ class MortalityTab(QWidget):
         # Rage bar color
         bar_color = color if pct > 0 else BORDER_SOLID
         self._rage_bar.setStyleSheet(f"background: {bar_color}; border-radius: 4px;")
-        self._update_rage_bar_width()
+        self._update_rage_bar_width(pct)
 
 
 _KEYRING_SERVICE = "QuestLog-EldenTracker"
@@ -690,19 +1148,25 @@ def _keyring_load() -> str:
         return ""
 
 
+def _days_hours_display(total_sec):
+    """Xd HH:MM past a day, HH:MM:SS under a day -- matches the site's Run
+    Duration formatting, which rolls over to days instead of ever-growing
+    triple-digit hours."""
+    total_sec = max(0, int(total_sec))
+    days  = total_sec // 86400
+    hours = (total_sec % 86400) // 3600
+    mins  = (total_sec % 3600) // 60
+    if days > 0:
+        return f"{days}d {hours:02d}:{mins:02d}"
+    secs = total_sec % 60
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
 def _run_duration_display(started_at):
     if not started_at:
         return "--"
     elapsed = int(time.time()) - int(started_at)
-    if elapsed < 0:
-        elapsed = 0
-    days  = elapsed // 86400
-    hours = (elapsed % 86400) // 3600
-    mins  = (elapsed % 3600) // 60
-    if days > 0:
-        return f"{days}d {hours:02d}:{mins:02d}"
-    secs = elapsed % 60
-    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    return _days_hours_display(elapsed)
 
 
 def _load_settings():
@@ -713,6 +1177,10 @@ def _load_settings():
         "hotkey_death":    "f9",
         "hotkey_subtract": "f10",
         "hotkey_reset":    "f8",
+        "hotkey_focus":    "f4",
+        "hotkey_unfocus":  "f5",
+        "hotkey_defeat":   "f11",
+        "save_file_path":  "",
         "api_key":         "",
         "session_token":   "",
         "username":        "",
@@ -756,6 +1224,17 @@ class ItemsTab(QWidget):
         self._ql_sync   = None
         self._local_run = None
         self._rows      = {}   # item_name → (widget, collected_state)
+        # A click optimistically flips a row immediately, but the next few
+        # refresh() calls read from ql_sync's status-poll cache, which only
+        # updates every ~6s -- for that window, refresh() was clobbering the
+        # just-clicked row back to its stale pre-click state (the visible
+        # "checks, flickers unchecked, then re-checks" bug), since refresh()
+        # trusted the server snapshot unconditionally. Track what the user
+        # just set per item and skip overwriting it until either the server
+        # snapshot agrees or a timeout passes (in case the POST silently
+        # failed and the server genuinely never gets the new state).
+        self._pending = {}   # item_name -> (desired_collected_bool, expires_at_monotonic)
+        self._PENDING_TIMEOUT_SEC = 10
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -802,21 +1281,26 @@ class ItemsTab(QWidget):
         gate_l.addWidget(gate_lbl)
         root.addWidget(self._gate)
 
-        # ── Scroll area ──────────────────────────────────────────────────────
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet("background: transparent;")
-        self._scroll.hide()
-
+        # ── Item list ────────────────────────────────────────────────────────
+        # Capped-height internal QScrollArea, matching the site: Items gets
+        # its own scrollable box rather than flowing the full item list into
+        # RunOverviewTab's outer page (which made the page dozens of screens
+        # long with a large item set).
         self._list_widget = QWidget()
         self._list_widget.setStyleSheet("background: transparent;")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(0)
         self._list_layout.addStretch()
-        self._scroll.setWidget(self._list_widget)
-        root.addWidget(self._scroll)
+
+        self._list_scroll = QScrollArea()
+        self._list_scroll.setWidgetResizable(True)
+        self._list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list_scroll.setFixedHeight(360)
+        self._list_scroll.setWidget(self._list_widget)
+        self._list_scroll.hide()
+        root.addWidget(self._list_scroll)
 
     def set_ql_sync(self, ql_sync):
         self._ql_sync   = ql_sync
@@ -824,10 +1308,10 @@ class ItemsTab(QWidget):
         active = bool(ql_sync)
         if active:
             self._gate.hide()
-            self._scroll.show()
+            self._list_scroll.show()
         else:
             self._gate.show()
-            self._scroll.hide()
+            self._list_scroll.hide()
             self._rows.clear()
             self._clear_list()
 
@@ -837,14 +1321,28 @@ class ItemsTab(QWidget):
         active = bool(local_run)
         if active:
             self._gate.hide()
-            self._scroll.show()
+            self._list_scroll.show()
         else:
             self._gate.show()
-            self._scroll.hide()
+            self._list_scroll.hide()
             self._rows.clear()
             self._clear_list()
 
     def refresh(self, items, collected, total):
+        import time as _time
+        now = _time.monotonic()
+
+        # Reconcile pending optimistic clicks against this server snapshot:
+        # if the server now agrees, the pending override isn't needed
+        # anymore; if it's been pending too long (POST likely failed
+        # silently), give up on it rather than hold a wrong state forever.
+        by_name = {it["name"]: it for it in items}
+        for name in list(self._pending.keys()):
+            desired, expires_at = self._pending[name]
+            server_it = by_name.get(name)
+            if (server_it and server_it["collected"] == desired) or now >= expires_at:
+                del self._pending[name]
+
         self._progress_lbl.setText(f"{collected} / {total}")
         if total > 0:
             pct = collected / total
@@ -857,9 +1355,13 @@ class ItemsTab(QWidget):
         if current_names != new_names:
             self._rebuild(items)
         else:
-            # Just update collected states
+            # Just update collected states -- but a name with an unresolved
+            # pending click keeps showing what the user just set, not this
+            # (possibly stale) server snapshot's value for it.
             for it in items:
                 name = it["name"]
+                if name in self._pending:
+                    continue
                 if name in self._rows:
                     row_w, _ = self._rows[name]
                     self._rows[name] = (row_w, it["collected"])
@@ -955,16 +1457,19 @@ class ItemsTab(QWidget):
         backend = self._ql_sync or self._local_run
         if not backend:
             return
+        import time as _time
         name      = row._item_name
         collected = row._item_collected
         if collected:
             backend.uncollect_item(name)
             self._update_row_style(row, False)
             self._rows[name] = (row, False)
+            self._pending[name] = (False, _time.monotonic() + self._PENDING_TIMEOUT_SEC)
         else:
             backend.collect_item(name)
             self._update_row_style(row, True)
             self._rows[name] = (row, True)
+            self._pending[name] = (True, _time.monotonic() + self._PENDING_TIMEOUT_SEC)
         # Update progress immediately without waiting for next tick
         new_collected = sum(1 for _, c in self._rows.values() if c)
         total = len(self._rows)
@@ -1162,6 +1667,7 @@ class SettingsTab(QWidget):
     pin_changed      = pyqtSignal(bool)
     compact_changed  = pyqtSignal(bool)
     hotkeys_changed  = pyqtSignal(dict)
+    save_path_changed = pyqtSignal(str)   # new save_file_path, live-applied (no restart needed)
     login_requested  = pyqtSignal()
     logout_requested = pyqtSignal()
     reset_stats      = pyqtSignal()     # reset deaths + session timers (app + site)
@@ -1252,8 +1758,44 @@ class SettingsTab(QWidget):
             ("hotkey_death",    "Add Death",              "f9"),
             ("hotkey_subtract", "Subtract Death",         "f10"),
             ("hotkey_reset",    "Reset All (hold 3s)",    "f8"),
+            ("hotkey_focus",    "Focus Boss",             "f4"),
+            ("hotkey_unfocus",  "Unfocus Boss",           "f5"),
+            ("hotkey_defeat",   "Defeat Focused Boss",    "f11"),
         ]:
             self._hk_fields[key] = self._make_hotkey_row(outer, label, settings.get(key, default))
+
+        # ── Save File Tracking ───────────────────────────────────────────────
+        section("Save File Tracking")
+
+        save_info = QLabel(
+            "Auto-checks off items in your Items list the moment your Elden "
+            "Ring save file shows them as owned — no manual clicking needed. "
+            "Vanilla and Elden Ring Reforged only, for now."
+        )
+        save_info.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        save_info.setWordWrap(True)
+        outer.addWidget(save_info)
+        outer.addSpacing(10)
+
+        self._save_path_lbl = QLabel()
+        self._save_path_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 11px;")
+        self._save_path_lbl.setWordWrap(True)
+        outer.addWidget(self._save_path_lbl)
+        outer.addSpacing(8)
+
+        save_btn_row = QHBoxLayout()
+        save_btn_row.setSpacing(8)
+        auto_detect_btn = QPushButton("AUTO-DETECT")
+        auto_detect_btn.setFixedHeight(34)
+        auto_detect_btn.clicked.connect(self._on_auto_detect_save)
+        browse_btn = QPushButton("BROWSE...")
+        browse_btn.setFixedHeight(34)
+        browse_btn.clicked.connect(self._on_browse_save)
+        save_btn_row.addWidget(auto_detect_btn)
+        save_btn_row.addWidget(browse_btn)
+        outer.addLayout(save_btn_row)
+
+        self._update_save_path_label(settings.get("save_file_path", ""))
 
         # ── Run Stats ─────────────────────────────────────────────────────────
         section("Run Stats")
@@ -1354,9 +1896,11 @@ class SettingsTab(QWidget):
         footer_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         ql_lbl = QLabel()
-        ql_pix = QPixmap(LOGO_QL)
+        ql_lbl.setFixedSize(24, 24)
+        ql_pix = _load_pixmap(LOGO_QL, LOGO_QL_ICO)
         if not ql_pix.isNull():
-            ql_lbl.setPixmap(ql_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
+            ql_lbl.setPixmap(ql_pix.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            ql_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer_row.addWidget(ql_lbl)
 
         ver = QLabel(f"EldenTracker  v{APP_VERSION}  ·  Powered by QuestLog  ·  by Casual Heroes")
@@ -1364,9 +1908,11 @@ class SettingsTab(QWidget):
         footer_row.addWidget(ver)
 
         ch_lbl = QLabel()
-        ch_pix = QPixmap(LOGO_CH)
+        ch_lbl.setFixedSize(24, 24)
+        ch_pix = _load_pixmap(LOGO_CH, LOGO_CH_ICO)
         if not ch_pix.isNull():
-            ch_lbl.setPixmap(ch_pix.scaledToHeight(24, Qt.TransformationMode.SmoothTransformation))
+            ch_lbl.setPixmap(ch_pix.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            ch_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer_row.addWidget(ch_lbl)
 
         outer.addLayout(footer_row)
@@ -1384,6 +1930,52 @@ class SettingsTab(QWidget):
         # Restore logged-in state if we have saved credentials
         if settings.get("api_key") and settings.get("username"):
             self._set_logged_in(settings["username"])
+
+    # ── Save file tracking ───────────────────────────────────────────────────
+
+    def _update_save_path_label(self, path):
+        if path:
+            self._save_path_lbl.setText(f"Tracking: {path}")
+        else:
+            self._save_path_lbl.setText("Not configured — items must be checked off manually.")
+
+    def _on_auto_detect_save(self):
+        from core.save_paths import find_save_files
+        candidates = find_save_files()
+        if not candidates:
+            self._save_path_lbl.setText(
+                "No save file found under %APPDATA%\\EldenRing\\ — use Browse to select one manually."
+            )
+            return
+        if len(candidates) == 1:
+            self._apply_save_path(candidates[0]["path"])
+            return
+
+        from PyQt6.QtWidgets import QInputDialog
+        labels = [f"{c['mode'].title()} — {c['path']}" for c in candidates]
+        choice, ok = QInputDialog.getItem(
+            self, "Multiple Save Files Found",
+            "Select which save file to track:", labels, editable=False,
+        )
+        if ok and choice:
+            idx = labels.index(choice)
+            self._apply_save_path(candidates[idx]["path"])
+
+    def _on_browse_save(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Elden Ring Save File", "",
+            "Elden Ring Saves (*.sl2 *.err);;All Files (*)",
+        )
+        if path:
+            self._apply_save_path(path)
+
+    def _apply_save_path(self, path):
+        self._update_save_path_label(path)
+        settings = _load_settings()
+        settings["save_file_path"] = path
+        _save_settings(settings)
+        self.save_path_changed.emit(path)
 
     # ── Hotkey row ────────────────────────────────────────────────────────────
 
@@ -1474,6 +2066,9 @@ class SettingsTab(QWidget):
             "hotkey_death":    "f9",
             "hotkey_subtract": "f10",
             "hotkey_reset":    "f8",
+            "hotkey_focus":    "f4",
+            "hotkey_unfocus":  "f5",
+            "hotkey_defeat":   "f11",
         }
         changed = False
         for key, default in mapping.items():
@@ -1489,6 +2084,9 @@ class SettingsTab(QWidget):
                 "death":    self._settings.get("hotkey_death",    "f9"),
                 "subtract": self._settings.get("hotkey_subtract", "f10"),
                 "reset":    self._settings.get("hotkey_reset",    "f8"),
+                "focus":    self._settings.get("hotkey_focus",    "f4"),
+                "unfocus":  self._settings.get("hotkey_unfocus",  "f5"),
+                "defeat":   self._settings.get("hotkey_defeat",   "f11"),
             })
 
     # ── Login UI ──────────────────────────────────────────────────────────────
@@ -1554,99 +2152,59 @@ class SettingsTab(QWidget):
         self.pin_btn.blockSignals(False)
 
 
-class CompactStatsBar(QWidget):
-    """Slim always-visible strip showing key mortality stats above the tabs."""
+class RunOverviewTab(QWidget):
+    """
+    Composite "everything on one page" tab matching the site's layout:
+    stat tiles / Fury / Log Death-Undo-Reset (MortalityTab) -> Boss Progress
+    (region-tabbed boss lists) -> Items, all under ONE outer scroll area
+    instead of separate sibling tabs the user has to switch between. Owns no
+    logic of its own -- mortality_tab/boss_progress_tabs/items_tab are built
+    and wired exactly as before by BossTrackerWindow, this just changes where
+    they're parented in the layout.
+    """
 
-    def __init__(self, parent=None):
+    def __init__(self, mortality_tab, boss_progress_tabs, items_tab, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(52)
-        self.setStyleSheet(f"background: {BG_SURFACE}; border-bottom: 1px solid {BORDER_SOLID};")
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        def stat(label, default="—"):
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            col.setContentsMargins(0, 0, 0, 0)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            lbl.setStyleSheet(f"color: {TEXT_DIM}; letter-spacing: 1.5px;")
-            val = QLabel(default)
-            val.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-            val.setStyleSheet(f"color: {TEXT_PRIMARY};")
-            col.addWidget(lbl)
-            col.addWidget(val)
-            return col, val
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: transparent;")
 
-        session_col, self._session_val = stat("SESSION DEATHS", "0")
-        total_col,   self._total_val   = stat("TOTAL DEATHS",   "0")
-        dhr_col,     self._dhr_val     = stat("DEATHS / BOSS",  "0.0")
-        time_col,    self._time_val    = stat("SESSION TIME",   "00:00:00")
-        streak_col,   self._streak_val   = stat("CURRENT STREAK", "00:00:00")
-        longest_col,  self._longest_val  = stat("LONGEST LIFE",   "00:00:00")
-        survival_col, self._survival_val = stat("RUN DURATION",   "--")
-        rage_col,     self._rage_val     = stat("FURY",           "Calm")
+        page = QWidget()
+        page.setStyleSheet(f"background: {BG_BASE};")
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
 
-        def sep():
-            layout.addSpacing(20)
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.VLine)
-            line.setFixedWidth(1)
-            line.setFixedHeight(32)
-            line.setStyleSheet(f"color: {BORDER_SOLID};")
-            layout.addWidget(line, 0, Qt.AlignmentFlag.AlignVCenter)
-            layout.addSpacing(20)
+        page_layout.addWidget(mortality_tab)
 
-        layout.addLayout(session_col)
-        sep()
-        layout.addLayout(total_col)
-        sep()
-        layout.addLayout(dhr_col)
-        sep()
-        layout.addLayout(time_col)
-        sep()
-        layout.addLayout(streak_col)
-        sep()
-        layout.addLayout(longest_col)
-        sep()
-        layout.addLayout(survival_col)
-        sep()
-        layout.addLayout(rage_col)
-        layout.addStretch()
+        page_layout.addSpacing(8)
+        boss_section_lbl = QLabel("BOSS PROGRESS")
+        boss_section_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        boss_section_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; letter-spacing: 2px; padding: 0 24px;")
+        page_layout.addWidget(boss_section_lbl)
+        page_layout.addSpacing(8)
 
-    def _make_sep(self):
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.VLine)
-        line.setFixedWidth(1)
-        line.setStyleSheet(f"color: {BORDER_SOLID};")
-        return line
+        # Nested QTabWidget for the boss regions (LIMGRAVE / STORMVEIL / ...)
+        # -- picks up the same global QSS tab styling as the top-level
+        # self.tabs (gold underline, uppercase, letter-spaced) automatically,
+        # since QSS applies window-wide. Fixed-ish height since it's inside
+        # a bigger scroll now, not the sole content of its own tab -- let it
+        # size to its content (each BossTab no longer scrolls internally).
+        boss_progress_tabs.setDocumentMode(True)
+        page_layout.addWidget(boss_progress_tabs)
 
-    def update_timing(self, streak_sec, longest_sec, started_at=None):
-        def _fmt(s):
-            return f"{s//3600:02}:{(s%3600)//60:02}:{s%60:02}"
-        self._streak_val.setText(_fmt(streak_sec))
-        self._longest_val.setText(_fmt(longest_sec))
-        self._survival_val.setText(_run_duration_display(started_at))
+        page_layout.addSpacing(16)
+        page_layout.addWidget(items_tab)
 
-    def update_stats(self, session, deaths, ql_sync=None, bosses_defeated=0):
-        self._session_val.setText(str(session.session_deaths))
-        self._total_val.setText(str(session.total_deaths))
-        server_rate = ql_sync.get_true_death_rate() if ql_sync else None
-        _dpb = server_rate if server_rate is not None else deaths.deaths_per_boss(bosses_defeated)
-        self._dhr_val.setText(str(_dpb))
-        self._time_val.setText(session.elapsed_str())
-
-        pct, state, color = deaths.rage_state()
-        hollow = deaths.hollow_streak()
-        if hollow > 0:
-            self._rage_val.setText(f"HOLLOW ×{hollow}")
-            self._rage_val.setStyleSheet(f"color: {RED_LIVE}; font-size: 13px; font-weight: 700;")
-        else:
-            label = f"{pct}% {state}" if pct > 0 else "Calm"
-            self._rage_val.setText(label)
-            self._rage_val.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 700;")
+        scroll.setWidget(page)
+        outer.addWidget(scroll)
 
 
 class BossTrackerWindow(QMainWindow):
@@ -1691,9 +2249,11 @@ class BossTrackerWindow(QMainWindow):
         h_layout.setSpacing(12)
 
         logo_lbl = QLabel()
-        pix = QPixmap(LOGO_QL)
+        logo_lbl.setFixedSize(38, 38)
+        pix = _load_pixmap(LOGO_QL, LOGO_QL_ICO)
         if not pix.isNull():
-            logo_lbl.setPixmap(pix.scaledToHeight(38, Qt.TransformationMode.SmoothTransformation))
+            logo_lbl.setPixmap(pix.scaled(38, 38, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
             logo_lbl.setText("QL")
             logo_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 18px; font-weight: 700;")
@@ -1775,22 +2335,28 @@ class BossTrackerWindow(QMainWindow):
         h_layout.addWidget(github_btn)
         root.addWidget(header)
 
-        # ── Compact stats bar ──
-        self.stats_bar = CompactStatsBar()
-        root.addWidget(self.stats_bar)
-
-        # ── Tabs — built dynamically from boss groups ──
+        # ── Tabs ──
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs)
 
+        # Nested tab widget for boss regions (LIMGRAVE, STORMVEIL CASTLE,
+        # ...) -- lives INSIDE the OVERVIEW tab's scrolling page (built
+        # below), not as top-level siblings of OVERVIEW/DEATHS/BUILD. Built
+        # before _build_boss_tabs() populates it.
+        self._boss_progress_tabs = QTabWidget()
         self._boss_tabs = {}   # group_label → BossTab
         self._build_boss_tabs(boss_tracker, on_kill, self._api, self._on_boss_mark, self._ql_sync)
 
         self.mortality_tab = MortalityTab(session=session, deaths=deaths, rage_label=rage_label)
-        self.mortality_tab.sig_add_death.connect(self._on_add_death)
-        self.mortality_tab.sig_subtract_death.connect(self._on_subtract_death)
-        self.mortality_tab.sig_reset_deaths.connect(self._on_reset_deaths)
+        # sig_add_death / sig_subtract_death / sig_reset_deaths are connected
+        # by main.py (App), not here -- they route through the same
+        # on_death/on_subtract/on_reset handlers the F8/F9/F10 hotkeys use,
+        # so there's exactly one code path per action instead of two (this
+        # used to have its own separate _on_add_death/_on_subtract_death/
+        # _on_reset_deaths here, which only called self._api and skipped
+        # the _local_run / boss_key / in-flight-guard logic main.py's
+        # versions have).
         self.mortality_tab.sig_reset_bosses.connect(self._on_reset_bosses)
 
         self.settings_tab  = SettingsTab(self._settings)
@@ -1804,9 +2370,20 @@ class BossTrackerWindow(QMainWindow):
         self.items_tab.set_ql_sync(ql_sync)
         self.death_log_tab.set_active(bool(ql_sync))
 
-        self.tabs.addTab(self.mortality_tab, "MORTALITY")
-        self.tabs.addTab(self.items_tab,     "ITEMS")
+        from gui.build_planner import BuildPlannerWidget
+        self.build_planner_tab = BuildPlannerWidget(api=self._api)
+
+        # Stats/Fury/Log-Death (mortality_tab) + Boss Progress
+        # (boss_progress_tabs) + Items (items_tab) merged into one
+        # continuously-scrolling page, matching the site's layout, instead
+        # of separate sibling tabs the user had to switch between.
+        # DEATHS and BUILD stay as their own tabs -- the site treats those
+        # as distinct sections too.
+        self.run_overview_tab = RunOverviewTab(self.mortality_tab, self._boss_progress_tabs, self.items_tab)
+
+        self.tabs.addTab(self.run_overview_tab, "OVERVIEW")
         self.tabs.addTab(self.death_log_tab, "DEATHS")
+        self.tabs.addTab(self.build_planner_tab, "BUILD")
 
         if self._settings.get("pin", False):
             self._apply_pin(True)
@@ -1935,7 +2512,12 @@ class BossTrackerWindow(QMainWindow):
                           api=api, on_boss_mark=on_boss_mark, ql_sync=ql_sync)
             label = self._TAB_LABELS.get(group, group.upper())
             self._boss_tabs[group] = tab
-            self.tabs.insertTab(self.tabs.count() - 0, tab, label)
+            # Region tabs (LIMGRAVE, STORMVEIL CASTLE, ...) now live in their
+            # own nested QTabWidget (self._boss_progress_tabs) inside
+            # RunOverviewTab's single scrolling page, matching the site's
+            # "Boss Progress" section -- not top-level siblings of
+            # MORTALITY/ITEMS/DEATHS/BUILD anymore.
+            self._boss_progress_tabs.addTab(tab, label)
 
     def _toggle_pin(self, checked):
         self._settings["pin"] = checked
@@ -1979,30 +2561,46 @@ class BossTrackerWindow(QMainWindow):
             for row in tab.rows:
                 row.setFixedHeight(height)
 
-    def _on_add_death(self):
-        if self._deaths and self._session:
-            self._deaths.record_death()
-            if self._api:
-                self._api.post_death()
-
-    def _on_subtract_death(self):
-        if self._deaths and self._session:
-            self._deaths.subtract_death()
-            if self._api:
-                self._api.post_subtract()
-
-    def _on_reset_deaths(self):
-        if self._deaths and self._session:
-            self._session.reset_total_deaths()
-            self._deaths.reset()
-            if self._api:
-                self._api.post_reset()
-
     def _on_reset_bosses(self):
         if self.boss_tracker:
             self.boss_tracker.reset_all()
             if self._api:
                 self._api.post_boss_reset()
+
+    def open_focus_picker(self):
+        """
+        Focus hotkey: show a searchable picker of every undefeated boss across
+        ALL region tabs (not just whichever tab happens to be visible), and
+        focus whichever one is chosen. This is the app-side equivalent of
+        the web's "Where did you die?" boss picker, but for setting focus
+        rather than attributing a death.
+        """
+        undefeated = []
+        for tab in self._boss_tabs.values():
+            undefeated.extend(tab.undefeated_bosses())
+        if not undefeated:
+            return
+        picked = BossFocusPickerDialog.pick(undefeated, parent=self)
+        if not picked:
+            return
+        key, name = picked
+        for tab in self._boss_tabs.values():
+            if any(row.key == key for row in tab.rows):
+                tab.focus_boss(key, name)
+                break
+
+    def unfocus_current_boss(self):
+        """Unfocus hotkey: clear whatever boss is currently focused, on whichever tab has it."""
+        for tab in self._boss_tabs.values():
+            if tab._focused_key:
+                tab.unfocus_current()
+
+    def defeat_focused_boss(self):
+        """Hotkey action: mark the currently focused boss defeated."""
+        for tab in self._boss_tabs.values():
+            if tab._focused_key:
+                return tab.defeat_current()
+        return False
 
     def refresh(self, boss_list, session=None, deaths=None, ql_sync=None, local_run=None, started_at=None):
         by_group = {}
@@ -2016,14 +2614,25 @@ class BossTrackerWindow(QMainWindow):
         d = deaths  or self._deaths
         bosses_defeated = sum(1 for b in boss_list if b.get("defeated"))
         if s and d:
-            self.stats_bar.update_stats(s, d, ql_sync=ql_sync, bosses_defeated=bosses_defeated)
             self.mortality_tab.update_stats(s, d, ql_sync=ql_sync, bosses_defeated=bosses_defeated)
 
         if ql_sync and ql_sync.running:
             streak  = ql_sync.current_streak_sec()
             longest = ql_sync.longest_life_sec()
-            self.stats_bar.update_timing(streak, longest, started_at=started_at)
-            self.mortality_tab.update_timing(streak, longest, started_at=started_at)
+            # Run Duration = true lifetime PLAYED time: server-tracked,
+            # accumulates ONLY while the listener is connected AND the game
+            # exe is detected running (see QuestLogSync/_heartbeat), never
+            # reset by Full Reset/Stop Session. The server is the sole
+            # source of truth here -- server_authoritative=True means we
+            # show exactly what it reports (or "--" if it hasn't sent a
+            # value yet), and deliberately do NOT fall back to local
+            # wall-clock math, which has no concept of exe state and would
+            # silently tick every second regardless of whether the game is
+            # even running.
+            playtime_sec, _playtime_fmt = ql_sync.get_lifetime_playtime()
+            self.mortality_tab.update_timing(streak, longest, started_at=started_at,
+                                              lifetime_playtime_sec=playtime_sec,
+                                              server_authoritative=True)
 
             items, collected, total = ql_sync.get_items()
             if items:
@@ -2038,7 +2647,6 @@ class BossTrackerWindow(QMainWindow):
                 )
 
         elif local_run:
-            self.stats_bar.update_timing(0, 0, started_at=started_at)
             self.mortality_tab.update_timing(0, 0, started_at=started_at)
             items, collected, total = local_run.get_items()
             self.items_tab.refresh(items, collected, total)

@@ -10,6 +10,7 @@ build/
 .eggs/
 
 # Runtime data — user-specific, not versioned
+data/
 data/runs/
 data/logs/
 data/active_run.json
@@ -25,6 +26,15 @@ data/builds/
 
 # Builder cache — regenerated on first run from API
 data/builder_cache/
+data/local_builds/
+data/regulation_exports/
+
+# Release catalog snapshot must be versioned/packaged.
+!resources/
+!resources/catalog/
+!resources/catalog/**
+!core/catalog_sync.py
+!tools/build_catalog_snapshot.py
 
 # Virtual environments
 .venv/
@@ -45,6 +55,14 @@ desktop.ini
 # PyInstaller
 dist/
 build/
+dist_codex/
+build_codex/
+dist_notice_test/
+build_notice_test/
+dist_logo_test/
+build_logo_test/
+release_dist/
+release_build/
 
 # easyocr model cache (downloaded on first run)
 .EasyOCR/
@@ -54,3 +72,26 @@ build/
 *_backup*/
 *_backup_*/
 build_log.txt
+ER_SAVE_PARSING_RESEARCH.md
+ER0000.cnv
+ER0000.err
+ER0000.sl2
+
+# Local regulation/save research dumps, not app release payload.
+Paramdex/
+ConvergenceDebugTool/
+CHARACTER_BUILDER_APP_HANDOFF.md
+ERR_STAT_CORRECTIONS.md
+REGULATION_BIN_PIPELINE.md
+REGULATION_BIN_SAMPLE_DATA.md
+SAVE_PARSER_PIPELINE.md
+games/CHARACTER_BUILDER_APP_HANDOFF.md
+
+# Local developer-only data extraction/research tooling.
+tools/live_save_diff.py
+tools/export_regulation_diffs.py
+tools/export_regulation_full.py
+tools/export_weapon_skill_corrections.py
+core/param_reader.py
+core/regulation_bin.py
+core/err_reference_data.py

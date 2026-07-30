@@ -9,6 +9,9 @@ DEFAULT_HOTKEYS = {
     "death":    "f9",
     "subtract": "f10",
     "reset":    "f8",
+    "focus":    "f4",
+    "unfocus":  "f5",
+    "defeat":   "f11",
 }
 
 _VALID_HOTKEY_RE = __import__("re").compile(r"^[a-z0-9 +\-]+$", __import__("re").IGNORECASE)
@@ -22,11 +25,15 @@ def _validate_hotkey(key: str) -> str:
 
 
 class Detector:
-    def __init__(self, death_tracker, on_death=None, on_subtract=None, on_reset=None, hotkeys=None):
+    def __init__(self, death_tracker, on_death=None, on_subtract=None, on_reset=None,
+                 on_focus=None, on_unfocus=None, on_defeat=None, hotkeys=None):
         self.death_tracker     = death_tracker
         self.on_death          = on_death    or (lambda: None)
         self.on_subtract       = on_subtract or (lambda: None)
         self.on_reset          = on_reset    or (lambda: None)
+        self.on_focus          = on_focus    or (lambda: None)
+        self.on_unfocus        = on_unfocus  or (lambda: None)
+        self.on_defeat         = on_defeat   or (lambda: None)
         self._hotkeys          = {**DEFAULT_HOTKEYS, **(hotkeys or {})}
         self._running          = False
         self._reset_hold_start = None
@@ -37,18 +44,24 @@ class Detector:
         self._unhook()
         self._hotkeys = {**DEFAULT_HOTKEYS, **hotkeys}
         self._hook()
-        log.info("Hotkeys updated: death=%s  subtract=%s  reset=%s (hold 3s)",
+        log.info("Hotkeys updated: death=%s  subtract=%s  reset=%s (hold 3s)  focus=%s  unfocus=%s  defeat=%s",
                  self._hotkeys["death"].upper(),
                  self._hotkeys["subtract"].upper(),
-                 self._hotkeys["reset"].upper())
+                 self._hotkeys["reset"].upper(),
+                 self._hotkeys["focus"].upper(),
+                 self._hotkeys["unfocus"].upper(),
+                 self._hotkeys["defeat"].upper())
 
     def start(self):
         self._running = True
         self._hook()
-        log.info("Hotkeys active: %s=death  %s=subtract  %s=hold 3s to reset",
+        log.info("Hotkeys active: %s=death  %s=subtract  %s=hold 3s to reset  %s=focus  %s=unfocus  %s=defeat focused boss",
                  self._hotkeys["death"].upper(),
                  self._hotkeys["subtract"].upper(),
-                 self._hotkeys["reset"].upper())
+                 self._hotkeys["reset"].upper(),
+                 self._hotkeys["focus"].upper(),
+                 self._hotkeys["unfocus"].upper(),
+                 self._hotkeys["defeat"].upper())
 
     def stop(self):
         self._running = False
@@ -60,6 +73,9 @@ class Detector:
             hk_death    = _validate_hotkey(self._hotkeys.get("death", ""))
             hk_subtract = _validate_hotkey(self._hotkeys.get("subtract", ""))
             hk_reset    = _validate_hotkey(self._hotkeys.get("reset", ""))
+            hk_focus    = _validate_hotkey(self._hotkeys.get("focus", ""))
+            hk_unfocus  = _validate_hotkey(self._hotkeys.get("unfocus", ""))
+            hk_defeat   = _validate_hotkey(self._hotkeys.get("defeat", ""))
             if hk_death:
                 self._hooks.append(keyboard.on_press_key(hk_death,    lambda _: self._on_death(),    suppress=False))
             if hk_subtract:
@@ -67,6 +83,12 @@ class Detector:
             if hk_reset:
                 self._hooks.append(keyboard.on_press_key(hk_reset,    self._reset_key_down,           suppress=False))
                 self._hooks.append(keyboard.on_release_key(hk_reset,  self._reset_key_up))
+            if hk_focus:
+                self._hooks.append(keyboard.on_press_key(hk_focus,    lambda _: self._on_focus(),    suppress=False))
+            if hk_unfocus:
+                self._hooks.append(keyboard.on_press_key(hk_unfocus,  lambda _: self._on_unfocus(),  suppress=False))
+            if hk_defeat:
+                self._hooks.append(keyboard.on_press_key(hk_defeat,   lambda _: self._on_defeat(),   suppress=False))
         except Exception:
             log.exception("Failed to register hotkeys")
 
@@ -85,6 +107,18 @@ class Detector:
     def _on_subtract(self):
         log.info("Subtract hotkey (%s)", self._hotkeys["subtract"].upper())
         self.on_subtract()
+
+    def _on_focus(self):
+        log.info("Focus hotkey (%s)", self._hotkeys["focus"].upper())
+        self.on_focus()
+
+    def _on_unfocus(self):
+        log.info("Unfocus hotkey (%s)", self._hotkeys["unfocus"].upper())
+        self.on_unfocus()
+
+    def _on_defeat(self):
+        log.info("Defeat focused boss hotkey (%s)", self._hotkeys["defeat"].upper())
+        self.on_defeat()
 
     def _reset_key_down(self, event):
         with self._reset_lock:

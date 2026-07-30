@@ -1,0 +1,1259 @@
+{
+  "graces": {
+    "71000": {
+      "name": "Godrick the Grafted",
+      "subcategory": "Stormveil Castle"
+    },
+    "71001": {
+      "name": "Margit, the Fell Omen",
+      "subcategory": "Stormhill"
+    },
+    "71002": {
+      "name": "Castleward Tunnel",
+      "subcategory": "Stormhill"
+    },
+    "71003": {
+      "name": "Gateside Chamber",
+      "subcategory": "Stormveil Castle"
+    },
+    "71004": {
+      "name": "Stormveil Cliffside",
+      "subcategory": "Stormveil Castle"
+    },
+    "71005": {
+      "name": "Rampart Tower",
+      "subcategory": "Stormveil Castle"
+    },
+    "71006": {
+      "name": "Liftside Chamber",
+      "subcategory": "Stormveil Castle"
+    },
+    "71007": {
+      "name": "Secluded Cell",
+      "subcategory": "Stormveil Castle"
+    },
+    "71008": {
+      "name": "Stormveil Main Gate",
+      "subcategory": "Stormveil Castle"
+    },
+    "71100": {
+      "name": "Elden Throne",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71101": {
+      "name": "Erdtree Sanctuary",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71102": {
+      "name": "East Capital Rampart",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71103": {
+      "name": "Lower Capital Church",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71104": {
+      "name": "Avenue Balcony",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71105": {
+      "name": "West Capital Rampart",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71107": {
+      "name": "Queen's Bedchamber",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71108": {
+      "name": "Fortified Manor, First Floor",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71109": {
+      "name": "Divine Bridge",
+      "subcategory": "Leyndell, Royal Capital"
+    },
+    "71120": {
+      "name": "Elden Throne",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71121": {
+      "name": "Erdtree Sanctuary",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71122": {
+      "name": "East Capital Rampart",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71123": {
+      "name": "Leyendell, Capital of Ash",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71124": {
+      "name": "Queen's Bedchamber",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71125": {
+      "name": "Divine Bridge",
+      "subcategory": "Leyndell, Ashen Capital"
+    },
+    "71190": {
+      "name": "Table of Lost Grace"
+    },
+    "71210": {
+      "name": "Dragonkin Soldier of Nokstella",
+      "subcategory": "Ainsel River"
+    },
+    "71211": {
+      "name": "Ainsel River Well Depths",
+      "subcategory": "Ainsel River"
+    },
+    "71212": {
+      "name": "Ainsel River Sluice Gate",
+      "subcategory": "Ainsel River"
+    },
+    "71213": {
+      "name": "Ainsel River Downstream",
+      "subcategory": "Ainsel River"
+    },
+    "71214": {
+      "name": "Ainsel River Main",
+      "subcategory": "Ainsel River Main"
+    },
+    "71215": {
+      "name": "Nokstella, Eternal City",
+      "subcategory": "Ainsel River Main"
+    },
+    "71216": {
+      "name": "Lake of Rot Shoreside",
+      "subcategory": "Lake of Rot"
+    },
+    "71218": {
+      "name": "Grand Cloister",
+      "subcategory": "Lake of Rot"
+    },
+    "71219": {
+      "name": "Nokstella Waterfall Basin",
+      "subcategory": "Ainsel River Main"
+    },
+    "71220": {
+      "name": "Great Waterfall Basin",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71221": {
+      "name": "Mimic Tear",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71222": {
+      "name": "Siofra River Bank",
+      "subcategory": "Siofra River"
+    },
+    "71223": {
+      "name": "Worshippers' Woods",
+      "subcategory": "Siofra River"
+    },
+    "71224": {
+      "name": "Ancestral Woods",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71225": {
+      "name": "Aqueduct-Facing Cliffs",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71226": {
+      "name": "Night's Sacred Ground",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71227": {
+      "name": "Below the Well",
+      "subcategory": "Siofra River"
+    },
+    "71230": {
+      "name": "Prince of Death's Throne",
+      "subcategory": "Deeproot Depths"
+    },
+    "71231": {
+      "name": "Root-Facing Cliffs",
+      "subcategory": "Deeproot Depths"
+    },
+    "71232": {
+      "name": "Great Waterfall Crest",
+      "subcategory": "Deeproot Depths"
+    },
+    "71233": {
+      "name": "Deeproot Depths",
+      "subcategory": "Deeproot Depths"
+    },
+    "71234": {
+      "name": "The Nameless Eternal City",
+      "subcategory": "Deeproot Depths"
+    },
+    "71235": {
+      "name": "Across the Roots",
+      "subcategory": "Deeproot Depths"
+    },
+    "71240": {
+      "name": "Astel, Naturalborn of the Void",
+      "subcategory": "Ainsel River"
+    },
+    "71250": {
+      "name": "Cocoon of the Empyrean",
+      "subcategory": "Mohgwyn Palace"
+    },
+    "71251": {
+      "name": "Palace Approach Ledge-Road",
+      "subcategory": "Mohgwyn Palace"
+    },
+    "71252": {
+      "name": "Dynasty Mausoleum Entrance",
+      "subcategory": "Mohgwyn Palace"
+    },
+    "71253": {
+      "name": "Dynasty Mausoleum Midpoint",
+      "subcategory": "Mohgwyn Palace"
+    },
+    "71270": {
+      "name": "Siofra River Well Depths",
+      "subcategory": "Siofra River"
+    },
+    "71271": {
+      "name": "Nokron, Eternal City",
+      "subcategory": "Nokron, Eternal City"
+    },
+    "71300": {
+      "name": "Maliketh, the Black Blade",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71301": {
+      "name": "Dragonlord Placidusax",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71302": {
+      "name": "Dragon Temple Altar",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71303": {
+      "name": "Crumbling Beast Grave",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71304": {
+      "name": "Crumbling Beast Grave Depths",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71305": {
+      "name": "Tempest-Facing Balcony",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71306": {
+      "name": "Dragon Temple",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71307": {
+      "name": "Dragon Temple Transept",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71308": {
+      "name": "Dragon Temple Lift",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71309": {
+      "name": "Dragon Temple Rooftop",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71310": {
+      "name": "Beside the Great Bridge",
+      "subcategory": "Crumbling Farum Azula"
+    },
+    "71400": {
+      "name": "Raya Lucaria Grand Library",
+      "subcategory": "Academy of Raya Lucaria"
+    },
+    "71401": {
+      "name": "Debate Parlour",
+      "subcategory": "Academy of Raya Lucaria"
+    },
+    "71402": {
+      "name": "Church of the Cuckoo",
+      "subcategory": "Academy of Raya Lucaria"
+    },
+    "71403": {
+      "name": "Schoolhouse Classroom",
+      "subcategory": "Academy of Raya Lucaria"
+    },
+    "71500": {
+      "name": "Malenia, Goddess of Rot",
+      "subcategory": "Elphael, Brace of the Haligtree"
+    },
+    "71501": {
+      "name": "Prayer Room",
+      "subcategory": "Elphael, Brace of the Haligtree"
+    },
+    "71502": {
+      "name": "Elphael Inner Wall",
+      "subcategory": "Elphael, Brace of the Haligtree"
+    },
+    "71503": {
+      "name": "Drainage Channel",
+      "subcategory": "Elphael, Brace of the Haligtree"
+    },
+    "71504": {
+      "name": "Haligtree Roots",
+      "subcategory": "Elphael, Brace of the Haligtree"
+    },
+    "71505": {
+      "name": "Haligtree Promenade",
+      "subcategory": "Miquella's Haligtree"
+    },
+    "71506": {
+      "name": "Haligtree Canopy",
+      "subcategory": "Miquella's Haligtree"
+    },
+    "71507": {
+      "name": "Haligtree Town",
+      "subcategory": "Miquella's Haligtree"
+    },
+    "71508": {
+      "name": "Haligtree Town Plaza",
+      "subcategory": "Miquella's Haligtree"
+    },
+    "71600": {
+      "name": "Rykard, Lord of Blasphemy",
+      "subcategory": "Volcano Manor"
+    },
+    "71601": {
+      "name": "Temple of Eiglay",
+      "subcategory": "Volcano Manor"
+    },
+    "71602": {
+      "name": "Volcano Manor",
+      "subcategory": "Volcano Manor"
+    },
+    "71603": {
+      "name": "Prison Town Church",
+      "subcategory": "Volcano Manor"
+    },
+    "71604": {
+      "name": "Guest Hall",
+      "subcategory": "Volcano Manor"
+    },
+    "71605": {
+      "name": "Audience Pathway",
+      "subcategory": "Volcano Manor"
+    },
+    "71606": {
+      "name": "Abductor Virgin",
+      "subcategory": "Volcano Manor"
+    },
+    "71607": {
+      "name": "Subterranean Inquisition Chamber",
+      "subcategory": "Volcano Manor"
+    },
+    "71800": {
+      "name": "Cave of Knowledge",
+      "subcategory": "Stranded Graveyard"
+    },
+    "71801": {
+      "name": "Stranded Graveyard",
+      "subcategory": "Stranded Graveyard"
+    },
+    "71900": {
+      "name": "Fractured Marika",
+      "subcategory": "Stone Platform"
+    },
+    "73000": {
+      "name": "Tombsward Catacombs",
+      "subcategory": "Weeping Peninsula"
+    },
+    "73001": {
+      "name": "Impaler's Catacombs",
+      "subcategory": "Weeping Peninsula"
+    },
+    "73002": {
+      "name": "Stormfoot Catacombs",
+      "subcategory": "Limgrave"
+    },
+    "73003": {
+      "name": "Road's End Catacombs",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73004": {
+      "name": "Murkwater Catacombs",
+      "subcategory": "Limgrave"
+    },
+    "73005": {
+      "name": "Black Knife Catacombs",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73006": {
+      "name": "Cliffbottom Catacombs",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73007": {
+      "name": "Wyndham Catacombs",
+      "subcategory": "Mt. Gelmir"
+    },
+    "73008": {
+      "name": "Sainted Hero's Grave",
+      "subcategory": "Altus Plateau"
+    },
+    "73009": {
+      "name": "Gelmir Hero's Grave",
+      "subcategory": "Mt. Gelmir"
+    },
+    "73010": {
+      "name": "Auzira Hero's Grave",
+      "subcategory": "Capital Outskirts"
+    },
+    "73011": {
+      "name": "Deathtouched Catacombs",
+      "subcategory": "Stormhill"
+    },
+    "73012": {
+      "name": "Unsightly Catacombs",
+      "subcategory": "Altus Plateau"
+    },
+    "73013": {
+      "name": "Auriza Side Tomb",
+      "subcategory": "Capital Outskirts"
+    },
+    "73014": {
+      "name": "Minor Erdtree Catacombs",
+      "subcategory": "Caelid"
+    },
+    "73015": {
+      "name": "Caelid Catacombs",
+      "subcategory": "Caelid"
+    },
+    "73016": {
+      "name": "War-Dead Catacombs",
+      "subcategory": "Caelid"
+    },
+    "73017": {
+      "name": "Giant-Conquering Hero's Grave",
+      "subcategory": "Flame Peak"
+    },
+    "73018": {
+      "name": "Giant's Mountaintop Catacombs",
+      "subcategory": "Flame Peak"
+    },
+    "73019": {
+      "name": "Consecrated Snowfield Catacombs",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "73020": {
+      "name": "Hidden Path to the Haligtree",
+      "subcategory": "Forbiden Lands"
+    },
+    "73100": {
+      "name": "Murkwater Cave",
+      "subcategory": "Limgrave"
+    },
+    "73101": {
+      "name": "Earthbore Cave",
+      "subcategory": "Weeping Peninsula"
+    },
+    "73102": {
+      "name": "Tombsward Cave",
+      "subcategory": "Weeping Peninsula"
+    },
+    "73103": {
+      "name": "Groveside Cave",
+      "subcategory": "Limgrave"
+    },
+    "73104": {
+      "name": "Stillwater Cave",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73105": {
+      "name": "Lakeside Crystal Cave",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73106": {
+      "name": "Academy Crystal Cave",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73107": {
+      "name": "Seethewater Cave",
+      "subcategory": "Mt. Gelmir"
+    },
+    "73109": {
+      "name": "Volcano Cave",
+      "subcategory": "Mt. Gelmir"
+    },
+    "73110": {
+      "name": "Dragonbarrow Cave",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "73111": {
+      "name": "Sellia Hideaway",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "73112": {
+      "name": "Cave of the Forlorn",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "73115": {
+      "name": "Coastal Cave",
+      "subcategory": "Limgrave"
+    },
+    "73117": {
+      "name": "Highroad Cave",
+      "subcategory": "Limgrave"
+    },
+    "73118": {
+      "name": "Perfumer's Grotto",
+      "subcategory": "Altus Plateau"
+    },
+    "73119": {
+      "name": "Sage's Cave",
+      "subcategory": "Altus Plateau"
+    },
+    "73120": {
+      "name": "Abandoned Cave",
+      "subcategory": "Caelid"
+    },
+    "73121": {
+      "name": "Gaol Cave",
+      "subcategory": "Caelid"
+    },
+    "73122": {
+      "name": "Spiritcaller's Cave",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "73200": {
+      "name": "Morne Tunnel",
+      "subcategory": "Weeping Peninsula"
+    },
+    "73201": {
+      "name": "Limgrave Tunnels",
+      "subcategory": "Limgrave"
+    },
+    "73202": {
+      "name": "Raya Lucaria Crystal Tunnel",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73204": {
+      "name": "Old Altus Tunnel",
+      "subcategory": "Altus Plateau"
+    },
+    "73205": {
+      "name": "Altus Tunnel",
+      "subcategory": "Altus Plateau"
+    },
+    "73207": {
+      "name": "Gael Tunnel",
+      "subcategory": "Caelid"
+    },
+    "73208": {
+      "name": "Sellia Crystal Tunnel",
+      "subcategory": "Caelid"
+    },
+    "73211": {
+      "name": "Yelough Anix Tunnel",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "73257": {
+      "name": "Rear Gael Tunnel Entrance",
+      "subcategory": "Caelid"
+    },
+    "73410": {
+      "name": "Limgrave Tower Bridge",
+      "subcategory": "Stormhill"
+    },
+    "73412": {
+      "name": "Divine Tower of Limgrave",
+      "subcategory": "Stormhill"
+    },
+    "73420": {
+      "name": "Study Hall Entrance",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73421": {
+      "name": "Liurnia Tower Bridge",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73422": {
+      "name": "Divine Tower of Liurnia",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "73430": {
+      "name": "Divine Tower of West Altus",
+      "subcategory": "Capital Outskirts"
+    },
+    "73431": {
+      "name": "Sealed Tunnel",
+      "subcategory": "Capital Outskirts"
+    },
+    "73432": {
+      "name": "Divine Tower of West Altus: Gate",
+      "subcategory": "Capital Outskirts"
+    },
+    "73440": {
+      "name": "Divine Tower of Caelid: Basement",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "73441": {
+      "name": "Divine Tower of Caelid: Center",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "73450": {
+      "name": "Divine Tower of the East Altus: Gate",
+      "subcategory": "Forbiden Lands"
+    },
+    "73451": {
+      "name": "Divine Tower of the East Altus",
+      "subcategory": "Forbiden Lands"
+    },
+    "73460": {
+      "name": "Isolated Divine Tower",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "73500": {
+      "name": "Cathedral of the Forsaken",
+      "subcategory": "Subterranean Shunning-Grounds"
+    },
+    "73501": {
+      "name": "Underground Roadside",
+      "subcategory": "Subterranean Shunning-Grounds"
+    },
+    "73502": {
+      "name": "Forsaken Depths",
+      "subcategory": "Subterranean Shunning-Grounds"
+    },
+    "73503": {
+      "name": "Leyndell Catacombs",
+      "subcategory": "Subterranean Shunning-Grounds"
+    },
+    "73504": {
+      "name": "Frenzied Flame Proscription",
+      "subcategory": "Subterranean Shunning-Grounds"
+    },
+    "73900": {
+      "name": "Magma Wyrm",
+      "subcategory": "Ruin-Strewn Precipice"
+    },
+    "73901": {
+      "name": "Ruin-Strewn Precipice",
+      "subcategory": "Ruin-Strewn Precipice"
+    },
+    "73902": {
+      "name": "Ruin-Strewn Precipice Overlook",
+      "subcategory": "Ruin-Strewn Precipice"
+    },
+    "76100": {
+      "name": "Church of Elleh",
+      "subcategory": "Limgrave"
+    },
+    "76101": {
+      "name": "The First Step",
+      "subcategory": "Limgrave"
+    },
+    "76102": {
+      "name": "Stormhill Shack",
+      "subcategory": "Stormhill"
+    },
+    "76103": {
+      "name": "Artist's Shack",
+      "subcategory": "Limgrave"
+    },
+    "76104": {
+      "name": "Third Church of Marika",
+      "subcategory": "Limgrave"
+    },
+    "76105": {
+      "name": "Fort Haight West",
+      "subcategory": "Limgrave"
+    },
+    "76106": {
+      "name": "Agheel Lake South",
+      "subcategory": "Limgrave"
+    },
+    "76108": {
+      "name": "Agheel Lake North",
+      "subcategory": "Limgrave"
+    },
+    "76110": {
+      "name": "Church of Dragon Communion",
+      "subcategory": "Limgrave"
+    },
+    "76111": {
+      "name": "Gatefront",
+      "subcategory": "Limgrave"
+    },
+    "76113": {
+      "name": "Seaside Ruins",
+      "subcategory": "Limgrave"
+    },
+    "76114": {
+      "name": "Mistwood Outskirts",
+      "subcategory": "Limgrave"
+    },
+    "76116": {
+      "name": "Murkwater Coast",
+      "subcategory": "Limgrave"
+    },
+    "76117": {
+      "name": "Saintsbridge",
+      "subcategory": "Stormhill"
+    },
+    "76118": {
+      "name": "Warmaster's Shack",
+      "subcategory": "Stormhill"
+    },
+    "76119": {
+      "name": "Summonwater Village Outskirts",
+      "subcategory": "Limgrave"
+    },
+    "76120": {
+      "name": "Waypoint Ruins Cellar",
+      "subcategory": "Limgrave"
+    },
+    "76150": {
+      "name": "Church of Pilgrimage",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76151": {
+      "name": "Castle Morne Rampart",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76152": {
+      "name": "Tombsward",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76153": {
+      "name": "South of the Lookout Tower",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76154": {
+      "name": "Ailing Village Outskirts",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76155": {
+      "name": "Beside the Crater-Pocked Glade",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76156": {
+      "name": "Isolated Merchant's Shack",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76157": {
+      "name": "Bridge of Sacrifice",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76158": {
+      "name": "Castle Morne Lift",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76159": {
+      "name": "Behind The Castle",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76160": {
+      "name": "Beside the Rampart Gaol",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76161": {
+      "name": "Morne Moangrave",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76162": {
+      "name": "Fourth Church of Marika",
+      "subcategory": "Weeping Peninsula"
+    },
+    "76200": {
+      "name": "Lake-Facing Cliffs",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76201": {
+      "name": "Liurnia Lake Shore",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76202": {
+      "name": "Laskyar Ruins",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76203": {
+      "name": "Scenic Isle",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76204": {
+      "name": "Academy Gate Town",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76205": {
+      "name": "South Raya Lucaria Gate",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76206": {
+      "name": "Main Academy Gate",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76207": {
+      "name": "East Raya Lucaria Gate",
+      "subcategory": "Bellum Highway"
+    },
+    "76208": {
+      "name": "Bellum Church",
+      "subcategory": "Bellum Highway"
+    },
+    "76209": {
+      "name": "Grand Lift of Dectus",
+      "subcategory": "Bellum Highway"
+    },
+    "76210": {
+      "name": "Foot of the Four Belfries",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76211": {
+      "name": "Sorcerer's Isle",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76212": {
+      "name": "Northern Liurnia Lake Shore",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76213": {
+      "name": "Road to the Manor",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76214": {
+      "name": "Main Caria Manor Gate",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76215": {
+      "name": "Slumbering Wolf's Shack",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76216": {
+      "name": "Boilprawn Shack",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76217": {
+      "name": "Artist's Shack",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76218": {
+      "name": "Revenger's Shack",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76219": {
+      "name": "Folly on the Lake",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76220": {
+      "name": "Village of the Albinaurics",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76221": {
+      "name": "Liurnia Highway North",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76222": {
+      "name": "Gate Town Bridge",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76223": {
+      "name": "Eastern Liurnia Lake Shore",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76224": {
+      "name": "Church of Vows",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76225": {
+      "name": "Ruined Labyrinth",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76226": {
+      "name": "Mausoleum Compound",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76227": {
+      "name": "The Four Belfries",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76228": {
+      "name": "Ranni's Rise",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76229": {
+      "name": "Ravine-Veiled Village",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76230": {
+      "name": "Manor Upper Level",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76231": {
+      "name": "Manor Lower Level",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76232": {
+      "name": "Royal Moongazing Grounds",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76233": {
+      "name": "Gate Town North",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76234": {
+      "name": "Eastern Tableland",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76235": {
+      "name": "The Ravine",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76236": {
+      "name": "Fallen Ruins of the Lake",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76237": {
+      "name": "Converted Tower",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76238": {
+      "name": "Behind Caria Manor",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76239": {
+      "name": "Frenzied Flame Village Outskirts",
+      "subcategory": "Bellum Highway"
+    },
+    "76240": {
+      "name": "Church of Inhibition",
+      "subcategory": "Bellum Highway"
+    },
+    "76241": {
+      "name": "Temple Quarter",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76242": {
+      "name": "East Gate Bridge Trestle",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76243": {
+      "name": "Crystalline Woods",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76244": {
+      "name": "Liurnia Highway South",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76245": {
+      "name": "Jarburg",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76247": {
+      "name": "Ranni's Chamber",
+      "subcategory": "Liurnia of the Lakes"
+    },
+    "76250": {
+      "name": "Moonlight Altar",
+      "subcategory": "Moonlight Altar"
+    },
+    "76251": {
+      "name": "Cathedral of Manus Celes",
+      "subcategory": "Moonlight Altar"
+    },
+    "76252": {
+      "name": "Altar South",
+      "subcategory": "Moonlight Altar"
+    },
+    "76300": {
+      "name": "Abandoned Coffin",
+      "subcategory": "Altus Plateau"
+    },
+    "76301": {
+      "name": "Altus Plateau",
+      "subcategory": "Altus Plateau"
+    },
+    "76302": {
+      "name": "Erdtree-Gazing Hill",
+      "subcategory": "Altus Plateau"
+    },
+    "76303": {
+      "name": "Altus Highway Junction",
+      "subcategory": "Altus Plateau"
+    },
+    "76304": {
+      "name": "Forest-Spanning Greatbridge",
+      "subcategory": "Altus Plateau"
+    },
+    "76305": {
+      "name": "Rampartside Path",
+      "subcategory": "Altus Plateau"
+    },
+    "76306": {
+      "name": "Bower of Bounty",
+      "subcategory": "Altus Plateau"
+    },
+    "76307": {
+      "name": "Road of Iniquity Side Path",
+      "subcategory": "Altus Plateau"
+    },
+    "76308": {
+      "name": "Windmill Village",
+      "subcategory": "Altus Plateau"
+    },
+    "76309": {
+      "name": "Outer Wall Phantom Tree",
+      "subcategory": "Capital Outskirts"
+    },
+    "76310": {
+      "name": "Minor Erdtree Church",
+      "subcategory": "Capital Outskirts"
+    },
+    "76311": {
+      "name": "Hermit Merchant's Shack",
+      "subcategory": "Capital Outskirts"
+    },
+    "76312": {
+      "name": "Outer Wall Battleground",
+      "subcategory": "Capital Outskirts"
+    },
+    "76313": {
+      "name": "Windmill Heights",
+      "subcategory": "Altus Plateau"
+    },
+    "76314": {
+      "name": "Capital Rampart",
+      "subcategory": "Capital Outskirts"
+    },
+    "76320": {
+      "name": "Shaded Castle Ramparts",
+      "subcategory": "Altus Plateau"
+    },
+    "76321": {
+      "name": "Shaded Castle Inner Gate",
+      "subcategory": "Altus Plateau"
+    },
+    "76322": {
+      "name": "Castellan's Hall",
+      "subcategory": "Altus Plateau"
+    },
+    "76350": {
+      "name": "Bridge of Iniquity",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76351": {
+      "name": "First Mt. Gelmir Campsite",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76352": {
+      "name": "Ninth Mt. Gelmir Campsite",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76353": {
+      "name": "Road of Iniquity",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76354": {
+      "name": "Seethewater River",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76355": {
+      "name": "Seethewater Terminus",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76356": {
+      "name": "Craftsman's Shack",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76357": {
+      "name": "Primeval Sorcerer Azur",
+      "subcategory": "Mt. Gelmir"
+    },
+    "76400": {
+      "name": "Smoldering Church",
+      "subcategory": "Caelid"
+    },
+    "76401": {
+      "name": "Rotview Balcony",
+      "subcategory": "Caelid"
+    },
+    "76402": {
+      "name": "Fort Gael North",
+      "subcategory": "Caelid"
+    },
+    "76403": {
+      "name": "Caelem Ruins",
+      "subcategory": "Caelid"
+    },
+    "76404": {
+      "name": "Cathedral of Dragon Communion",
+      "subcategory": "Caelid"
+    },
+    "76405": {
+      "name": "Caelid Highway South",
+      "subcategory": "Caelid"
+    },
+    "76406": {
+      "name": "Aeonia Swamp Shore",
+      "subcategory": "Swamp of Aeonia"
+    },
+    "76407": {
+      "name": "Astray from Caelid Highway North",
+      "subcategory": "Swamp of Aeonia"
+    },
+    "76409": {
+      "name": "Smoldering Wall",
+      "subcategory": "Caelid"
+    },
+    "76410": {
+      "name": "Deep Siofra Well",
+      "subcategory": "Caelid"
+    },
+    "76411": {
+      "name": "Southern Aeonia Swamp Bank",
+      "subcategory": "Caelid"
+    },
+    "76412": {
+      "name": "Heart of Aeonia",
+      "subcategory": "Swamp of Aeonia"
+    },
+    "76413": {
+      "name": "Inner Aeonia",
+      "subcategory": "Swamp of Aeonia"
+    },
+    "76414": {
+      "name": "Sellia Backstreets",
+      "subcategory": "Caelid"
+    },
+    "76415": {
+      "name": "Chair-Crypt of Sellia",
+      "subcategory": "Caelid"
+    },
+    "76416": {
+      "name": "Sellia Under-Stair",
+      "subcategory": "Caelid"
+    },
+    "76417": {
+      "name": "Impassable Greatbridge",
+      "subcategory": "Caelid"
+    },
+    "76418": {
+      "name": "Church of the Plague",
+      "subcategory": "Caelid"
+    },
+    "76419": {
+      "name": "Redmane Castle Plaza",
+      "subcategory": "Caelid"
+    },
+    "76420": {
+      "name": "Chamber Outside the Plaza",
+      "subcategory": "Caelid"
+    },
+    "76422": {
+      "name": "Starscourge Radahn",
+      "subcategory": "Caelid"
+    },
+    "76450": {
+      "name": "Dragonbarrow West",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76451": {
+      "name": "Isolated Merchant's Shack",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76452": {
+      "name": "Dragonbarrow Fork",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76453": {
+      "name": "Fort Faroth",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76454": {
+      "name": "Bestial Sanctum",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76455": {
+      "name": "Lenne's Rise",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76456": {
+      "name": "Farum Greatbridge",
+      "subcategory": "Greyoll's Dragonbarrow"
+    },
+    "76500": {
+      "name": "Forbidden Lands",
+      "subcategory": "Forbiden Lands"
+    },
+    "76501": {
+      "name": "Zamor Ruins",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76502": {
+      "name": "Grand Lift of Rold",
+      "subcategory": "Forbiden Lands"
+    },
+    "76503": {
+      "name": "Ancient Snow Valley Ruins",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76504": {
+      "name": "Freezing Lake",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76505": {
+      "name": "First Church of Marika",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76506": {
+      "name": "Giant's Gravepost",
+      "subcategory": "Flame Peak"
+    },
+    "76507": {
+      "name": "Church of Repose",
+      "subcategory": "Flame Peak"
+    },
+    "76508": {
+      "name": "Foot of the Forge",
+      "subcategory": "Flame Peak"
+    },
+    "76509": {
+      "name": "Fire Giant",
+      "subcategory": "Flame Peak"
+    },
+    "76510": {
+      "name": "Forge of the Giants",
+      "subcategory": "Flame Peak"
+    },
+    "76520": {
+      "name": "Whiteridge Road",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76521": {
+      "name": "Snow Valley Ruins Overlook",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76522": {
+      "name": "Castle Sol Main Gate",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76523": {
+      "name": "Church of the Eclipse",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76524": {
+      "name": "Castle Sol Rooftop",
+      "subcategory": "Mountaintops of the Giants"
+    },
+    "76550": {
+      "name": "Consecrated Snowfield",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "76551": {
+      "name": "Inner Consecrated Snowfield",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "76652": {
+      "name": "Ordina, Liturgical Town",
+      "subcategory": "Consecrated Snowfield"
+    },
+    "76653": {
+      "name": "Apostate Derelict",
+      "subcategory": "Consecrated Snowfield"
+    }
+  }
+}

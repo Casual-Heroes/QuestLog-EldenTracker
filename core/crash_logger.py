@@ -71,7 +71,6 @@ def _show_crash_dialog(tb_text: str):
         from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
         from PyQt6.QtCore import QUrl
         from PyQt6.QtGui import QDesktopServices
-        import subprocess
 
         app = QApplication.instance()
         if app is None:

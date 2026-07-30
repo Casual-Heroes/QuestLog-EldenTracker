@@ -1,0 +1,71 @@
+﻿//Format: Item Category; Weapons = 0x00000000, Armor = 0x10000000, Talismans = 0x20000000, Goods = 0x40000000, Ashes = 0x80000000
+
+// The lines below are for Elden Ring Reforged items.
+0x00000000 false Items/EldenRingReforged/Weapons.txt ERR: Weapons
+0x80000000 false Items/EldenRingReforged/Gems.txt ERR: Ashes of War
+0x10000000 false Items/EldenRingReforged/Armor.txt ERR: Armor
+0x20000000 false Items/EldenRingReforged/Talismans.txt ERR: Talismans
+0x00000000 false Items/EldenRingReforged/Ammo.txt ERR: Ammo
+0x40000000 false Items/EldenRingReforged/CrystalTears.txt ERR: Crystal Tears
+0x40000000 false Items/EldenRingReforged/Fortunes.txt ERR: Fortunes
+0x40000000 false Items/EldenRingReforged/Goods.txt ERR: Goods
+0x40000000 false Items/EldenRingReforged/KeyItems.txt ERR: Key Items
+0x40000000 false Items/EldenRingReforged/BindingRunes.txt ERR: Binding Runes
+0x40000000 false Items/EldenRingReforged/ShadowCurios.txt ERR: Shadowed Curios
+0x40000000 false Items/EldenRingReforged/Magic.txt ERR: Magic
+0x40000000 false Items/EldenRingReforged/SpiritAshes.txt ERR: Spirit Ashes
+0x40000000 false Items/EldenRingReforged/Cookbooks.txt ERR: Cookbooks
+
+// The lines below are standard Elden Ring items.
+0x00000000 false Items/Weapons/MeleeWeapons.txt Melee Weapons
+0x00000000 false Items/Weapons/RangedWeapons.txt Ranged Weapons
+0x80000000 false Items/Gems.txt Gems
+0x10000000 false Items/Armor.txt Armor
+0x00000000 false Items/Weapons/SpellTools.txt Spell Tools
+0x00000000 false Items/Weapons/Shields.txt Shields
+0x20000000 false Items/Talismans.txt Talismans
+0x00000000 false Items/Weapons/Ammo.txt Ammo (ERR IDs)
+0x40000000 false Items/Goods/UpgradeMaterials.txt Upgrade Materials
+0x40000000 false Items/Goods/Tools.txt Tools
+0x40000000 false Items/Goods/Consumables.txt Consumables
+0x40000000 false Items/Goods/CraftingMaterials.txt Crafting Materials
+0x40000000 false Items/Goods/KeyItems.txt Key Items
+0x40000000 false Items/Goods/CrystalTears.txt Crystal Tears
+0x40000000 false Items/Goods/Flasks.txt Flasks
+0x40000000 false Items/EldenRingReforged/SpiritAshesVanilla.txt Spirit Ashes (ERR IDs)
+0x40000000 false Items/EldenRingReforged/SpiritAshesDLC.txt DLC Spirit Ashes (ERR IDs)
+//0x40000000 false Items/Goods/Ashes.txt Spirit Ashes (Vanilla IDs)
+0x40000000 false Items/Goods/NotesPaintings.txt Notes and Paintings
+0x40000000 false Items/Goods/Gestures.txt Gestures
+0x40000000 false Items/Goods/Cookbooks.txt Cookbooks
+0x40000000 false Items/Goods/MerchantItems.txt Merchant Items
+0x40000000 false Items/Magic.txt Magic (ERR IDs)
+
+//DLC Categories
+0x00000000 false Items/DLC/DLCWeapons/DLCMeleeWeapons.txt DLC Melee Weapons
+0x00000000 false Items/DLC/DLCWeapons/DLCRangedWeapons.txt DLC Ranged Weapons
+0x80000000 false Items/DLC/DLCGems.txt DLC Gems
+0x10000000 false Items/DLC/DLCArmor.txt DLC Armor
+0x00000000 false Items/DLC/DLCWeapons/DLCSpellTools.txt DLC Spell Tools
+0x00000000 false Items/DLC/DLCWeapons/DLCShields.txt DLC Shields
+0x20000000 false Items/DLC/DLCTalismans.txt DLC Talismans
+0x00000000 false Items/DLC/DLCWeapons/DLCAmmo.txt DLC Ammo
+0x40000000 false Items/DLC/DLCGoods/DLCUpgradeMaterials.txt DLC Upgrade Materials
+0x40000000 false Items/DLC/DLCGoods/DLCTools.txt DLC Tools
+0x40000000 false Items/DLC/DLCGoods/DLCConsumables.txt DLC Consumables
+0x40000000 false Items/DLC/DLCGoods/DLCCraftingMaterials.txt DLC Crafting Materials
+0x40000000 false Items/DLC/DLCGoods/DLCKeyItems.txt DLC Key Items
+0x40000000 false Items/DLC/DLCGoods/DLCCrystalTears.txt DLC Crystal Tears
+//0x40000000 false Items/DLC/DLCGoods/DLCAshes.txt DLC Spirit Ashes (Vanilla IDs)
+0x40000000 false Items/DLC/DLCGoods/DLCNotesPaintings.txt DLC Notes and Paintings
+0x40000000 false Items/DLC/DLCGoods/DLCGestures.txt DLC Gestures
+0x40000000 false Items/DLC/DLCGoods/DLCCookbooks.txt DLC Cookbooks
+0x40000000 false Items/DLC/DLCGoods/DLCMerchantItems.txt DLC Merchant Items
+0x40000000 false Items/DLC/DLCMagic.txt DLC Magic
+
+//Uncomment the lines below for Cut Content items.
+0x10000000 false Items/CutContent/Armor.txt Cut Content Armor
+0x20000000 false Items/CutContent/Talismans.txt Cut Content Talismans
+
+//Uncomment the lines below for Seamless Coop items.
+0x40000000 false Items/Goods/SeamlessCoop.txt Seamless Coop

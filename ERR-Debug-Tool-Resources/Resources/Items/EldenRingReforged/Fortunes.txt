@@ -1,0 +1,30 @@
+900000 Oracle's Effigy
+900001 Phantasmal Effigy
+900010 Oracle's Remedy
+900108 Fortune of the Barbarian
+900118 Fortune of the Assassin
+900128 Fortune of the Sage
+900138 Fortune of the Ranger
+900148 Fortune of the Cleric
+900158 Fortune of the Apothecary
+900168 Fortune of the Heretic
+900178 Fortune of the Sorcerer
+900188 Fortune of the Sentinel
+900198 Fortune of the Dancer
+900208 Fortune of the Latenna
+900218 Fortune of the Houses
+900228 Fortune of the Spellsword
+900238 Fortune of the Godslayers
+900248 Fortune of the Adherent
+900258 Fortune of Haima
+900268 Fortune of the Crucible
+900278 Fortune of the Dynasts
+900288 Fortune of the Warmaster
+900298 Fortune of the Beasts
+900308 Fortune of the Bold
+900318 Fortune of the Wise
+900328 Fortune of the Cunning
+900338 Fortune of the Bulwark
+900348 Fortune of the Reeds
+900368 Fortune of the Brave
+900398 Fortune of the Spiritcaller

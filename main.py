@@ -18,12 +18,14 @@ from PyQt6.QtGui import QIcon
 
 from core.paths import assets as _assets_path, overlay as _overlay_path
 _ICO_CH = _assets_path("CH.ico")
-from core.run import load_run_meta, get_run_dir, save_active_slug
+from core.run import load_run_meta, get_run_dir, save_active_slug, update_run_meta
 from core.session import Session
 from core.deaths import DeathTracker
 from core.detection import Detector
 from core.bosses import BossTracker
 from core.state_writer import write_state
+from core.save_parser import SaveParseError
+from core.catalog_sync import startup_sync
 from games.registry import get_game
 from gui.run_selector import RunSelectorWidget
 from gui.boss_tracker import BossTrackerWindow
@@ -43,10 +45,46 @@ class _ServerSyncReady(QObject):
     synced = pyqtSignal(dict)  # deaths, rage_pct, rage_name, reset
 
 class _RageReady(QObject):
-    updated = pyqtSignal(float, str)  # rage_pct, rage_name
+    updated = pyqtSignal(float, str, int)  # rage_pct, rage_name, hollow_streak
+
+class _DeathHotkeyBridge(QObject):
+    """
+    F8/F9/F10 fire on the `keyboard` library's own listener thread, not
+    Qt's main thread. on_death/on_subtract/on_reset touch QWidgets
+    (self._tracker.death_log_tab, etc.) directly, so calling them straight
+    from the hotkey callback hits the same "QObject::setParent: Cannot set
+    parent, new parent is in a different thread" warning/crash risk that
+    _FocusHotkeyBridge was added for -- route through signals so the real
+    work runs on the main thread no matter which thread the hotkey fired on.
+    """
+    death_requested    = pyqtSignal()
+    subtract_requested = pyqtSignal()
+    reset_requested    = pyqtSignal()
+
+class _FocusHotkeyBridge(QObject):
+    """
+    Boss hotkeys fire on the `keyboard` library's own listener thread, not Qt's
+    main thread. open_focus_picker() creates/execs a QDialog and
+    unfocus_current_boss()/defeat_focused_boss() touch existing widgets --
+    all need to run on the main thread. Route through signals queued by Qt
+    instead of calling the tracker directly from the hotkey callback.
+    """
+    focus_requested   = pyqtSignal()
+    unfocus_requested = pyqtSignal()
+    defeat_requested  = pyqtSignal()
 
 class _RunPollReady(QObject):
     updated = pyqtSignal(list, list)  # active_runs, run_history
+
+class _LeaderboardSubmitReady(QObject):
+    """
+    QuestLogClient.submit_to_leaderboard()'s on_done/on_error callbacks run
+    on a background thread (see _fire() in core/api_client.py) -- route
+    through signals so updating mortality_tab's Submit button state and
+    showing a result dialog both happen on the main thread.
+    """
+    succeeded = pyqtSignal()
+    failed    = pyqtSignal(str)   # error message
 
 
 def _start_overlay_server():
@@ -64,6 +102,22 @@ def _start_overlay_server():
         httpd.serve_forever()
     except OSError:
         log.warning("Overlay port %d already in use — skipping.", OVERLAY_PORT)
+
+
+def _start_catalog_sync():
+    try:
+        result = startup_sync(logger=log)
+        log.info(
+            "Catalog sync: updated=%d unchanged=%d offline=%s update_required=%s",
+            len(result.updated),
+            len(result.unchanged),
+            result.offline,
+            result.app_update_required,
+        )
+        for warning in result.warnings:
+            log.warning("Catalog sync: %s", warning)
+    except Exception:
+        log.exception("Catalog sync failed unexpectedly; continuing with bundled/cache data")
 
 
 def _clamped_geo_from(geo, dst_win):
@@ -146,6 +200,18 @@ class App:
         self._ql_sync      = None   # QuestLogSync when a run is connected
         self._local_run    = None   # LocalRunData for non-synced runs
         self._local_life_start = None  # timestamp of current life start (local runs)
+        self._save_watcher = None  # core.save_watcher.SaveWatcher, live save-file item tracking
+        self._save_watcher_slot = 0  # character slot index to poll
+        self._save_named_prev  = None  # previous poll's owned-item name set (for diffing)
+        self._save_qty_prev    = None  # previous poll's stackable-item quantity dict (for diffing)
+        self._reward_bosses_synced = set()  # boss keys already server-marked from save-owned rewards
+        self._active_game_id = None  # game_id of the currently active run, for SaveWatcher setup
+        self._active_mode_id = None  # normalized mode_id ("vanilla"/"reforged") of the active run
+        self._active_slug    = None  # slug of the currently active run, for update_run_meta calls
+        self._active_questlog_token = ""  # this run's server token, survives past _ql_sync's lifecycle
+        self._run_ended     = False  # explicit End Run has been clicked (or restored from meta.json)
+        self._run_submitted = False  # this run has been submitted to the leaderboard (one-shot)
+        self._subtract_in_flight = False  # guards on_subtract() against double-fire (F10 + UI button racing)
         self._run_started_at   = None  # unix timestamp from server run's started_at field
         self._prev_session_deaths = 0  # for new-session detection
         self._timer        = QTimer()
@@ -159,9 +225,23 @@ class App:
         self._rage_bridge = _RageReady()
         self._rage_bridge.updated.connect(self._apply_rage_update)
 
+        # Bridge for boss hotkeys (fire on keyboard lib's thread) → main thread
+        self._focus_hotkey_bridge = _FocusHotkeyBridge()
+        self._focus_hotkey_bridge.focus_requested.connect(self._open_focus_picker)
+        self._focus_hotkey_bridge.unfocus_requested.connect(self._unfocus_current_boss)
+        self._focus_hotkey_bridge.defeat_requested.connect(self._defeat_focused_boss)
+
+        # Bridge for F8/F9/F10 hotkeys (fire on keyboard lib's thread) → main thread
+        self._death_hotkey_bridge = _DeathHotkeyBridge()
+
         # Bridge for run poller updates → main thread
         self._run_poll_bridge = _RunPollReady()
         self._run_poll_bridge.updated.connect(self._selector_win._widget.set_server_runs)
+
+        # Bridge for submit_to_leaderboard's response (fires on a bg thread) → main thread
+        self._leaderboard_submit_bridge = _LeaderboardSubmitReady()
+        self._leaderboard_submit_bridge.succeeded.connect(self._on_leaderboard_submit_succeeded)
+        self._leaderboard_submit_bridge.failed.connect(self._on_leaderboard_submit_failed)
 
     def start(self):
         self._selector_win.show()
@@ -184,10 +264,28 @@ class App:
             log.exception("Failed to load run metadata for '%s'", slug)
             return
 
+        self._active_game_id = game_id
+        self._active_mode_id = mode_id
+        self._active_slug    = slug
+        self._run_ended     = bool(meta.get("ended", False))
+        self._run_submitted = bool(meta.get("submitted", False))
+
         save_active_slug(slug)
         self._run_dir      = run_dir
         self._rage_label   = game_meta.get("rage_label", "Rage Index")
         self._run_started_at = meta.get("started_at")
+        if not self._run_started_at:
+            # Older/local-only runs never had started_at written at all
+            # (create_run only sets it when explicitly passed in, e.g. from
+            # a server-connected run) -- backfill it now so Run Duration
+            # shows something instead of "--" forever, and persist it so
+            # this only happens once per run.
+            import time as _time
+            self._run_started_at = int(_time.time())
+            try:
+                update_run_meta(slug, {"started_at": self._run_started_at})
+            except Exception:
+                log.exception("Failed to backfill started_at for run '%s'", slug)
 
         self._session = Session(process_name=game_meta["process"], run_dir=run_dir)
         self._deaths  = DeathTracker(self._session)
@@ -199,12 +297,18 @@ class App:
         self._ql_sync  = None
         self._local_run = None
         run_token = meta.get("questlog_token", "")
+        # Kept around after this run ends (unlike self._ql_sync, which stays
+        # alive but is a different lifecycle concern) so Submit to
+        # Leaderboard can still build its URL later -- see submit handler.
+        self._active_questlog_token = run_token if run_token != "__local__" else ""
         if run_token and run_token != "__local__" and self._api and self._api._api_key:
             from core.questlog_sync import QuestLogSync
             self._ql_sync = QuestLogSync(
                 run_token, self._api._api_key,
                 on_server_sync=lambda d: self._sync_bridge.synced.emit(d),
                 game_id=meta.get("game_id"),
+                initial_deaths=self._session.total_deaths,
+                initial_session_deaths=self._session.session_deaths,
             )
             self._ql_sync.start()
             log.info("QuestLog sync started token=%s", run_token[:12])
@@ -229,23 +333,73 @@ class App:
                 else:
                     log.warning("build_path outside allowed dir — skipping seed: %r", build_path)
 
+        # ── Live save-file item tracking ─────────────────────────────────────
+        # Vanilla/Reforged Elden Ring only (see core.save_watcher docstring
+        # for why Convergence isn't wired up yet). Works the same whether
+        # this run is cloud-synced or local -- both self._ql_sync and
+        # self._local_run expose the same collect_item(name)/uncollect_item(name)
+        # API the manual click path already uses, so the poller in _tick()
+        # doesn't need to know or care which backend is active.
+        self._save_watcher    = None
+        self._save_named_prev = None
+        self._save_qty_prev   = None
+        if game_id == "elden_ring" and mode_id in ("vanilla", "reforged"):
+            from gui.boss_tracker import _load_settings, _save_settings
+            settings = _load_settings()
+            tracker_settings = dict(settings)
+            for key in ("save_file_path", "save_slot", "save_character_name"):
+                if key in meta:
+                    tracker_settings[key] = meta[key]
+            save_path = tracker_settings.get("save_file_path", "")
+            if not save_path:
+                from core.save_paths import find_save_file_for_mode
+                candidate = find_save_file_for_mode(mode_id)
+                if candidate:
+                    save_path = candidate["path"]
+                    tracker_settings["save_file_path"] = save_path
+                    settings["save_file_path"] = save_path
+                    _save_settings(settings)
+                    log.info("Auto-detected %s save file: %s", mode_id, save_path)
+            if save_path and os.path.isfile(save_path):
+                from core.save_watcher import SaveWatcher
+                try:
+                    self._save_watcher = SaveWatcher(save_path, mode=mode_id)
+                    self._save_watcher_slot = self._resolve_save_slot(tracker_settings)
+                    log.info("Live save tracking enabled: %s (mode=%s slot_index=%d game_slot=%d)",
+                             save_path, mode_id, self._save_watcher_slot, self._save_watcher_slot + 1)
+                except Exception:
+                    log.exception("Failed to start SaveWatcher for %r", save_path)
+                    self._save_watcher = None
+
         # ── Event callbacks ───────────────────────────────────────────────────
         def on_death():
-            self._deaths.record_death()
-            s, d = self._session, self._deaths
-            pct, state, _ = d.rage_state()
+            if self._run_ended:
+                log.info("DEATH ignored -- run has ended")
+                return
             boss = self._ql_sync.get_current_boss() if self._ql_sync else ""
-            log.info("DEATH  session=%d  total=%d  rage=%d%%  %s  boss=%r",
-                     s.session_deaths, s.total_deaths, pct, state, boss)
+            boss_key = self._ql_sync.get_current_boss_key() if self._ql_sync else ""
             if self._ql_sync:
-                ses_d = s.session_deaths
-                tot_d = s.total_deaths
                 def _on_death_resp(resp):
                     if self._tracker:
                         life_sec = resp.get("life_duration", 0)
-                        self._tracker.death_log_tab.append_death(boss, life_sec, ses_d, tot_d)
-                self._ql_sync.on_death(boss, on_death_response=_on_death_resp)
+                        session_deaths = int(resp.get("session_deaths", self._session.session_deaths) or 0)
+                        total_deaths = int(
+                            resp.get("total_deaths", resp.get("deaths", self._session.total_deaths)) or 0
+                        )
+                        self._tracker.death_log_tab.append_death(
+                            resp.get("boss") or boss,
+                            life_sec,
+                            session_deaths,
+                            total_deaths,
+                        )
+                log.info("DEATH requested boss=%r boss_key=%r", boss, boss_key)
+                self._ql_sync.on_death(boss, boss_key=boss_key, on_death_response=_on_death_resp)
             elif self._local_run:
+                self._deaths.record_death()
+                s, d = self._session, self._deaths
+                pct, state, _ = d.rage_state()
+                log.info("DEATH  session=%d  total=%d  rage=%d%%  %s  boss=%r  boss_key=%r",
+                         s.session_deaths, s.total_deaths, pct, state, boss, boss_key)
                 import time as _time
                 now = _time.time()
                 life_sec = int(now - self._local_life_start) if self._local_life_start else 0
@@ -256,12 +410,32 @@ class App:
                         boss, life_sec, s.session_deaths, s.total_deaths)
 
         def on_subtract():
-            self._deaths.subtract_death()
-            log.info("SUBTRACT DEATH  session=%d  total=%d",
-                     self._session.session_deaths, self._session.total_deaths)
+            if self._run_ended:
+                log.info("SUBTRACT DEATH ignored -- run has ended")
+                return
+            # Guard against double-fire: F10 hotkey and the UI Subtract
+            # button both route here now, and could otherwise both land
+            # within the same instant (e.g. hotkey + accidental click).
+            # Web hit this exact bug -- see ER_SAVE_PARSING_RESEARCH.md's
+            # app-sync doc, section 2 -- and fixed it with an in-flight
+            # guard rather than blocking either input source outright.
+            if self._subtract_in_flight:
+                log.info("SUBTRACT DEATH ignored -- already in flight")
+                return
+            self._subtract_in_flight = True
+            try:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(750, lambda: setattr(self, "_subtract_in_flight", False))
+            except Exception:
+                self._subtract_in_flight = False
+
             if self._ql_sync:
+                log.info("SUBTRACT DEATH requested")
                 self._ql_sync.on_subtract()
             elif self._local_run:
+                self._deaths.subtract_death()
+                log.info("SUBTRACT DEATH  session=%d  total=%d",
+                         self._session.session_deaths, self._session.total_deaths)
                 self._local_run.undo_last_death()
                 if self._tracker:
                     # Reload from disk so UI matches persisted state
@@ -271,6 +445,9 @@ class App:
                         recent, s2.session_deaths, s2.total_deaths)
 
         def on_reset():
+            if self._run_ended:
+                log.info("RESET ALL DEATHS ignored -- run has ended")
+                return
             self._session.reset_total_deaths()
             self._deaths.reset()
             log.info("RESET ALL DEATHS")
@@ -286,7 +463,38 @@ class App:
 
         def on_kill(tier=None):
             from games.registry import ENEMY
-            self._deaths.record_kill(tier=tier or ENEMY)
+            if not self._ql_sync:
+                self._deaths.record_kill(tier=tier or ENEMY)
+
+        def on_focus_hotkey():
+            # Fires on the `keyboard` lib's own thread -- emit a signal so
+            # the actual dialog/widget work happens on the main Qt thread
+            # (see _FocusHotkeyBridge docstring).
+            self._focus_hotkey_bridge.focus_requested.emit()
+
+        def on_unfocus_hotkey():
+            self._focus_hotkey_bridge.unfocus_requested.emit()
+
+        def on_defeat_hotkey():
+            self._focus_hotkey_bridge.defeat_requested.emit()
+
+        # F8/F9/F10 fire on the `keyboard` lib's own thread too (see
+        # _DeathHotkeyBridge docstring) -- these are what get passed to
+        # Detector, while on_death/on_subtract/on_reset themselves stay
+        # connected directly to the UI buttons' Qt signals (already on the
+        # main thread there, no bridge needed for that path).
+        def on_death_hotkey():
+            self._death_hotkey_bridge.death_requested.emit()
+
+        def on_subtract_hotkey():
+            self._death_hotkey_bridge.subtract_requested.emit()
+
+        def on_reset_hotkey():
+            self._death_hotkey_bridge.reset_requested.emit()
+
+        self._death_hotkey_bridge.death_requested.connect(on_death)
+        self._death_hotkey_bridge.subtract_requested.connect(on_subtract)
+        self._death_hotkey_bridge.reset_requested.connect(on_reset)
 
         def on_boss_mark(boss_key):
             if not self._ql_sync:
@@ -299,6 +507,7 @@ class App:
                     rage_bridge.updated.emit(
                         float(result.get("rage_pct", 0)),
                         result.get("rage_name", "Maiden's Grace"),
+                        int(result.get("hollow_streak", 0) or 0),
                     )
             threading.Thread(target=_mark, daemon=True).start()
 
@@ -309,13 +518,19 @@ class App:
             "death":    saved.get("hotkey_death",    "f9"),
             "subtract": saved.get("hotkey_subtract", "f10"),
             "reset":    saved.get("hotkey_reset",    "f8"),
+            "focus":    saved.get("hotkey_focus",    "f4"),
+            "unfocus":  saved.get("hotkey_unfocus",  "f5"),
+            "defeat":   saved.get("hotkey_defeat",   "f11"),
         }
 
         self._detector = Detector(
             self._deaths,
-            on_death=on_death,
-            on_subtract=on_subtract,
-            on_reset=on_reset,
+            on_death=on_death_hotkey,
+            on_subtract=on_subtract_hotkey,
+            on_reset=on_reset_hotkey,
+            on_focus=on_focus_hotkey,
+            on_unfocus=on_unfocus_hotkey,
+            on_defeat=on_defeat_hotkey,
             hotkeys=hotkeys,
         )
         self._detector.start()
@@ -348,8 +563,35 @@ class App:
             if items:
                 self._tracker.items_tab.refresh(items, collected, total)
 
+        # Restore ended/submitted state from meta.json -- re-opening a
+        # previously-ended run should show it that way immediately, not
+        # just live-update in the session that originally ended it.
+        self._tracker.mortality_tab.set_can_submit(bool(self._active_questlog_token))
+        self._tracker.mortality_tab.set_submitted(self._run_submitted)
+        self._tracker.mortality_tab.set_ended(self._run_ended)
+
         self._tracker.switch_run.connect(self._go_to_selector)
+        # Route the UI's Add/Subtract/Reset buttons through the SAME handlers
+        # the F8/F9/F10 hotkeys use, rather than BossTrackerWindow's own
+        # separate (and narrower -- _api-only, no _local_run/boss_key
+        # support) _on_add_death/_on_subtract_death/_on_reset_deaths. Two
+        # independent paths to the same server action is exactly what let
+        # Subtract double-fire (F10 + button both able to fire with no
+        # shared guard) -- unifying to one path fixes that for all three
+        # actions, not just subtract.
+        self._tracker.mortality_tab.sig_add_death.connect(on_death)
+        self._tracker.mortality_tab.sig_subtract_death.connect(on_subtract)
+        self._tracker.mortality_tab.sig_reset_deaths.connect(on_reset)
+        self._tracker.mortality_tab.sig_set_total_deaths.connect(self._set_total_deaths)
+        self._tracker.mortality_tab.sig_set_session_deaths.connect(self._set_session_deaths)
+        # Focus/Unfocus buttons -- same handlers as the focus/unfocus hotkeys, so
+        # clicking and hotkey-pressing are just two triggers for one path.
+        self._tracker.mortality_tab.sig_focus_boss.connect(on_focus_hotkey)
+        self._tracker.mortality_tab.sig_unfocus_boss.connect(on_unfocus_hotkey)
+        self._tracker.mortality_tab.sig_end_run.connect(self._on_end_run_clicked)
+        self._tracker.mortality_tab.sig_submit_leaderboard.connect(self._on_submit_leaderboard_clicked)
         self._tracker.settings_tab.hotkeys_changed.connect(self._detector.update_hotkeys)
+        self._tracker.settings_tab.save_path_changed.connect(self._on_save_path_changed)
         self._tracker.settings_tab.login_requested.connect(self._do_login)
         self._tracker.settings_tab.logout_requested.connect(self._do_logout)
         self._tracker.settings_tab.login_succeeded.connect(self._on_login_succeeded)
@@ -442,6 +684,16 @@ class App:
         self._local_run        = None
         self._local_life_start = None
         self._run_started_at   = None
+        self._save_watcher     = None
+        self._save_named_prev  = None
+        self._save_qty_prev    = None
+        self._reward_bosses_synced = set()
+        self._active_game_id   = None
+        self._active_mode_id   = None
+        self._active_slug      = None
+        self._active_questlog_token = ""
+        self._run_ended        = False
+        self._run_submitted    = False
         if self._detector:
             self._detector.stop()
             self._detector = None
@@ -467,16 +719,178 @@ class App:
             write_state(self._session, self._deaths, self._bosses,
                         run_dir=self._run_dir, rage_label=self._rage_label)
             if self._tracker:
+                boss_list = self._bosses.export()
+                if self._ql_sync:
+                    # Merge in per-boss death counts from the server's status
+                    # poll (self._bosses.export() is the LOCAL boss tracker --
+                    # defeated/tier/group only, no death counts; those live
+                    # server-side, keyed by boss_key).
+                    death_by_key = {b["key"]: int(b.get("deaths", 0) or 0) for b in self._ql_sync.get_bosses()}
+                    death_aliases = {
+                        "Alabaster Lord (East of the Church of the Plague)": (
+                            "Alabaster Lord (Caelid)",
+                        ),
+                    }
+                    for b in boss_list:
+                        deaths = death_by_key.get(b["key"], int(b.get("deaths", 0) or 0))
+                        for alias in death_aliases.get(b["key"], ()):
+                            deaths = max(deaths, death_by_key.get(alias, 0), int(b.get("deaths", 0) or 0))
+                        b["deaths"] = deaths
                 self._tracker.refresh(
-                    self._bosses.export(),
+                    boss_list,
                     session=self._session,
                     deaths=self._deaths,
                     ql_sync=self._ql_sync,
                     local_run=self._local_run,
                     started_at=self._run_started_at,
                 )
+            self._poll_save_watcher()
         except Exception:
             log.exception("Error in tick loop")
+
+    def _resolve_save_slot(self, settings):
+        """
+        Pick which character slot SaveWatcher should poll. Explicit
+        save_slot wins; save_character_name is a friendlier fallback. If
+        neither is configured, preserve the old default of slot 0 and log
+        populated slots so misconfiguration is visible.
+        """
+        slot = settings.get("save_slot")
+        if isinstance(slot, int) and 0 <= slot < 10:
+            return slot
+        try:
+            slot = int(slot)
+            if 0 <= slot < 10:
+                return slot
+        except (TypeError, ValueError):
+            pass
+
+        wanted_name = (settings.get("save_character_name") or "").strip().lower()
+        slots = []
+        if self._save_watcher:
+            try:
+                slots = self._save_watcher.list_slots()
+            except Exception:
+                log.exception("Could not list save slots")
+        if slots:
+            log.info(
+                "Detected save slots: %s",
+                ", ".join(f"{s['index']}={s['name']!r}" for s in slots),
+            )
+        if wanted_name:
+            for s in slots:
+                if s["name"].strip().lower() == wanted_name:
+                    return s["index"]
+            log.warning("Configured save_character_name=%r was not found; using slot 0", wanted_name)
+        return 0
+
+    def _poll_save_watcher(self):
+        """
+        Reads the live save file (if configured) and auto-collects any
+        item the save shows as newly owned, matching it against the
+        current run's seeded item list. Calls the exact same
+        collect_item(name) the manual click path already uses (see
+        gui/boss_tracker.py ItemsTab._on_row_click) -- this only adds a new
+        caller, never a new "how an item gets marked collected" code path.
+
+        The save file's owned-item snapshot only ever grows monotonically
+        within a single character's playthrough (items aren't un-owned by
+        the game), so this deliberately only reacts to newly-appearing
+        names -- it never calls uncollect_item, unlike the manual click
+        path which can toggle either way.
+        """
+        watcher = self._save_watcher
+        if watcher is None:
+            return
+        backend = self._ql_sync or self._local_run
+        if backend is None:
+            return
+
+        items, _collected, _total = backend.get_items()
+        if not items:
+            log.debug("Live save tracking waiting for run item checklist")
+            return
+
+        try:
+            named_snapshot, qty_snapshot = watcher.poll(self._save_watcher_slot)
+        except (SaveParseError, FileNotFoundError, PermissionError, OSError) as e:
+            log.warning("Save file poll failed (will retry next tick): %s", e)
+            return
+
+        if self._save_named_prev is None:
+            # First successful poll this run -- establish the baseline
+            # without treating everything already-owned as "newly" owned
+            # (that would fire collect_item for the player's entire
+            # existing inventory on run start, which is correct behavior
+            # actually -- items already owned SHOULD get auto-checked off
+            # immediately rather than waiting for a future pickup -- so
+            # this baseline poll intentionally still runs the match/collect
+            # logic below, it just has nothing "previous" to diff against).
+            self._save_named_prev = set()
+            self._save_qty_prev   = {}
+
+        newly_named = named_snapshot - self._save_named_prev
+        uncollected_by_lower = {
+            it["name"].lower(): it["name"] for it in items if not it["collected"]
+        }
+
+        for entry in newly_named:
+            # entry is "Item Name (category)" -- strip the trailing
+            # " (category)" tag to get the bare display name for matching
+            # against the run's item list (which stores bare names).
+            name = entry.rsplit(" (", 1)[0] if entry.endswith(")") else entry
+            match = uncollected_by_lower.get(name.lower())
+            if match:
+                log.info("Live save tracking: auto-collecting %r", match)
+                backend.collect_item(match)
+                self._auto_mark_reward_boss(match)
+
+        # Quantity increases (stackable goods/key items) -- included for
+        # parity with tools/live_save_diff.py's approach even though no
+        # current build item type is quantity-tracked (see
+        # core/save_watcher.py docstring); matched the same way, by bare
+        # name against the run's uncollected items, in case a future build
+        # item type needs this.
+        for name, qty in qty_snapshot.items():
+            prev_qty = self._save_qty_prev.get(name, 0)
+            if qty > prev_qty:
+                match = uncollected_by_lower.get(name.lower())
+                if match:
+                    log.info("Live save tracking: auto-collecting %r (qty %d -> %d)", match, prev_qty, qty)
+                    backend.collect_item(match)
+                    self._auto_mark_reward_boss(match)
+
+        self._save_named_prev = named_snapshot
+        self._save_qty_prev   = qty_snapshot
+
+    def _auto_mark_reward_boss(self, item_name):
+        reward_bosses = {
+            ("reforged", "Singularity"): "Alabaster Lord (East of the Church of the Plague)",
+        }
+        boss_key = reward_bosses.get((self._active_mode_id, item_name))
+        if not boss_key or not self._bosses:
+            return
+        boss = self._bosses.bosses.get(boss_key)
+        if not boss:
+            log.warning("Live save tracking: reward %r maps to missing boss %r", item_name, boss_key)
+            return
+        needs_server_mark = self._ql_sync and boss_key not in self._reward_bosses_synced
+        if not boss.get("defeated"):
+            log.info("Live save tracking: auto-marking boss %r from reward %r", boss_key, item_name)
+            self._bosses.mark_defeated(boss_key)
+        elif needs_server_mark:
+            log.info("Live save tracking: boss %r already marked locally for reward %r", boss_key, item_name)
+        if needs_server_mark:
+            self._reward_bosses_synced.add(boss_key)
+            def _mark():
+                result = self._ql_sync.mark_boss(boss_key)
+                if result:
+                    self._rage_bridge.updated.emit(
+                        float(result.get("rage_pct", 0)),
+                        result.get("rage_name", "Maiden's Grace"),
+                        int(result.get("hollow_streak", 0) or 0),
+                    )
+            threading.Thread(target=_mark, daemon=True).start()
 
     # ── Login / logout ────────────────────────────────────────────────────────
 
@@ -514,6 +928,7 @@ class App:
         _save_settings(s)
 
         self._api = QuestLogClient(api_key, s.get("session_token", ""))
+        self._selector_win._widget.build_planner_tab.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
         self._selector_win._widget.set_server_runs(active_runs, run_history)
 
@@ -555,8 +970,10 @@ class App:
                 token = runs[0]["token"]
 
         self._api = QuestLogClient(api_key, token)
+        self._selector_win._widget.build_planner_tab.set_api(self._api)
         if self._tracker:
             self._tracker._api = self._api
+            self._tracker.build_planner_tab.set_api(self._api)
             for tab in self._tracker._boss_tabs.values():
                 tab._api = self._api
         self._selector_win._widget.set_logged_in(username)
@@ -575,6 +992,7 @@ class App:
         """
         from core.api_client import QuestLogClient
         from core.run import list_runs, create_run
+        from gui.boss_tracker import _load_settings
 
         _MODE_MAP = {"err": "reforged", "vanilla": "vanilla", "reforged": "reforged"}
 
@@ -583,6 +1001,11 @@ class App:
         mode       = _MODE_MAP.get(server_run.get("game_mode", "vanilla"), "vanilla")
         name       = server_run.get("build_name") or server_run.get("name") or f"{game.replace('_', ' ').title()} — QuestLog"
         started_at = server_run.get("started_at")
+        settings   = _load_settings()
+        save_meta  = {}
+        for key in ("save_file_path", "save_slot", "save_character_name"):
+            if key in settings and settings.get(key) not in ("", None):
+                save_meta[key] = settings[key]
 
         # Find existing local stub that was created for this exact server token,
         # or always create a fresh one — never reuse a different run's data.
@@ -594,12 +1017,24 @@ class App:
                 break
 
         if slug is None:
-            slug = create_run(name, game, mode, questlog_token=token, started_at=started_at)
+            slug = create_run(
+                name,
+                game,
+                mode,
+                questlog_token=token,
+                started_at=started_at,
+                save_file_path=save_meta.get("save_file_path"),
+                save_slot=save_meta.get("save_slot"),
+                save_character_name=save_meta.get("save_character_name"),
+            )
             log.info("Created local stub run '%s' for server run %s", slug, token[:8])
-        elif started_at:
-            # Update started_at on existing stub in case it wasn't stored yet
-            from core.run import update_run_meta
-            update_run_meta(slug, {"started_at": started_at})
+        else:
+            updates = dict(save_meta)
+            if started_at:
+                # Update started_at on existing stub in case it wasn't stored yet.
+                updates["started_at"] = started_at
+            if updates:
+                update_run_meta(slug, updates)
 
         # Set API client using our stored api_key + the server run's token
         if self._api:
@@ -610,6 +1045,7 @@ class App:
 
         if api_key and token:
             self._api = QuestLogClient(api_key, token)
+            self._selector_win._widget.build_planner_tab.set_api(self._api)
             # Persist token so next launch auto-reconnects
             from gui.boss_tracker import _load_settings, _save_settings
             s = _load_settings()
@@ -631,6 +1067,7 @@ class App:
             return
         log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
+        self._selector_win._widget.build_planner_tab.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
         # Fetch runs immediately in background — no manual refresh needed
         self._refresh_server_runs(api_key)
@@ -638,7 +1075,7 @@ class App:
     def _refresh_server_runs(self, api_key=None, username=None):
         """Fetch profile from server and update the selector's server runs section."""
         import requests
-        from core.api_client import BASE_URL, REQUEST_TIMEOUT
+        from core.api_client import APP_VERSION, BASE_URL, REQUEST_TIMEOUT
         if api_key is None:
             if self._api:
                 api_key = self._api._api_key
@@ -659,7 +1096,8 @@ class App:
                     f"{BASE_URL}/api/soulslike/desktop/profile/",
                     headers={
                         "X-Listener-Key": api_key,
-                        "X-App-Version":  "1.0.2",
+                        "X-App-Version":  APP_VERSION,
+                        "User-Agent":     f"QuestLog-EldenTracker/{APP_VERSION}",
                     },
                     timeout=REQUEST_TIMEOUT,
                 )
@@ -700,6 +1138,133 @@ class App:
         layout.addWidget(tab)
         dlg.exec()
 
+    def _on_save_path_changed(self, path):
+        """
+        Settings' Browse/Auto-detect just persisted a new save_file_path --
+        rebuild self._save_watcher immediately (if a run is active) rather
+        than waiting for a restart, matching the existing hotkey-remap live-
+        apply UX (settings_tab.hotkeys_changed -> self._detector.update_hotkeys).
+        """
+        self._save_watcher     = None
+        self._save_named_prev  = None
+        self._save_qty_prev    = None
+        self._reward_bosses_synced = set()
+        if not path or not os.path.isfile(path):
+            return
+        if self._active_game_id != "elden_ring" or self._active_mode_id not in ("vanilla", "reforged"):
+            return
+        from core.save_watcher import SaveWatcher
+        from gui.boss_tracker import _load_settings
+        try:
+            self._save_watcher = SaveWatcher(path, mode=self._active_mode_id)
+            self._save_watcher_slot = self._resolve_save_slot(_load_settings())
+            log.info("Live save tracking path updated: %s (mode=%s slot_index=%d game_slot=%d)",
+                     path, self._active_mode_id, self._save_watcher_slot, self._save_watcher_slot + 1)
+        except Exception:
+            log.exception("Failed to start SaveWatcher for %r", path)
+            self._save_watcher = None
+
+    def _on_end_run_clicked(self):
+        """
+        Explicit "End Run" -- ends the run server-side (if cloud-synced)
+        and persists ended=True locally, but deliberately does NOT tear the
+        app down the way _stop_active() does (no window close, no
+        self._timer/self._detector stop, self._ql_sync's poll loop keeps
+        running). Distinct from switch_run/closing the window, which
+        already end the run implicitly via _stop_active() -- this is a
+        separate, explicit action the user chose to take while staying on
+        this run's window.
+        """
+        if self._run_ended:
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self._tracker, "End this run?",
+            "End this run? You can still submit it to the leaderboard "
+            "afterward, but you won't be able to log more deaths against it.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._ql_sync:
+            try:
+                self._ql_sync.notify_run_ended()
+            except Exception:
+                log.exception("notify_run_ended failed")
+
+        self._run_ended = True
+        if self._active_slug:
+            try:
+                update_run_meta(self._active_slug, {"ended": True})
+            except Exception:
+                log.exception("Failed to persist ended=True for run '%s'", self._active_slug)
+
+        if self._tracker:
+            self._tracker.mortality_tab.set_ended(True)
+        log.info("Run explicitly ended: %s", self._active_slug)
+
+    def _on_submit_leaderboard_clicked(self):
+        """
+        "Submit to Leaderboard" -- one-shot, only reachable once the run
+        has ended and a server-tracked session (questlog_token) exists.
+        Goes through self._api (QuestLogClient), not self._ql_sync, since
+        self._ql_sync's own lifecycle is unrelated to whether this run can
+        still be submitted (it keeps running after End Run, and submission
+        must also work if the app was restarted after ending a run, when no
+        QuestLogSync exists for it at all).
+        """
+        if not self._run_ended or self._run_submitted:
+            return
+        if not self._active_questlog_token or not self._api:
+            return
+
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self._tracker, "Submit to Leaderboard?",
+            "This is final — once submitted, this run can't be resubmitted "
+            "or removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._tracker:
+            self._tracker.mortality_tab.submit_leaderboard_btn.setEnabled(False)
+
+        bridge = self._leaderboard_submit_bridge
+        self._api.submit_to_leaderboard(
+            self._active_questlog_token,
+            on_done=lambda data: bridge.succeeded.emit(),
+            on_error=lambda msg: bridge.failed.emit(msg),
+        )
+
+    def _on_leaderboard_submit_succeeded(self):
+        self._run_submitted = True
+        if self._active_slug:
+            try:
+                update_run_meta(self._active_slug, {"submitted": True})
+            except Exception:
+                log.exception("Failed to persist submitted=True for run '%s'", self._active_slug)
+        if self._tracker:
+            self._tracker.mortality_tab.set_submitted(True)
+        log.info("Run submitted to leaderboard: %s", self._active_slug)
+
+    def _on_leaderboard_submit_failed(self, message):
+        # "This run has already been submitted" is treated the same as
+        # success per the API contract -- the local record just fell out of
+        # sync with the server, not a real failure.
+        if "already been submitted" in message.lower():
+            self._on_leaderboard_submit_succeeded()
+            return
+        log.warning("Leaderboard submission failed: %s", message)
+        if self._tracker:
+            self._tracker.mortality_tab.submit_leaderboard_btn.setEnabled(True)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self._tracker, "Submission Failed", message)
+
     def _on_reset_stats(self):
         """Reset all deaths + timers in app and on QuestLog."""
         if self._session:
@@ -717,6 +1282,66 @@ class App:
             "reset":     True,
         })
         log.info("Stats reset via settings")
+
+    def _set_total_deaths(self, value):
+        if not self._session:
+            return
+        value = max(0, int(value))
+        self._session.total_deaths = value
+        session_changed = False
+        if self._session.session_deaths > value:
+            self._session.session_deaths = value
+            session_changed = True
+        self._session.save()
+        if self._ql_sync:
+            self._ql_sync.set_death_counts(
+                total_deaths=self._session.total_deaths,
+                session_deaths=self._session.session_deaths if session_changed else None,
+            )
+        if self._tracker:
+            self._tracker.death_log_tab.update_counts(
+                self._session.session_deaths,
+                self._session.total_deaths,
+            )
+            self._tracker.refresh(
+                self._bosses.export(),
+                self._session,
+                self._deaths,
+                ql_sync=self._ql_sync,
+                local_run=self._local_run,
+                started_at=self._run_started_at,
+            )
+        log.info("Total deaths manually set to %d", self._session.total_deaths)
+
+    def _set_session_deaths(self, value):
+        if not self._session:
+            return
+        value = max(0, int(value))
+        self._session.session_deaths = value
+        total_changed = False
+        if self._session.total_deaths < value:
+            self._session.total_deaths = value
+            total_changed = True
+        self._session.save()
+        if self._ql_sync:
+            self._ql_sync.set_death_counts(
+                total_deaths=self._session.total_deaths if total_changed else None,
+                session_deaths=self._session.session_deaths,
+            )
+        if self._tracker:
+            self._tracker.death_log_tab.update_counts(
+                self._session.session_deaths,
+                self._session.total_deaths,
+            )
+            self._tracker.refresh(
+                self._bosses.export(),
+                self._session,
+                self._deaths,
+                ql_sync=self._ql_sync,
+                local_run=self._local_run,
+                started_at=self._run_started_at,
+            )
+        log.info("Session deaths manually set to %d", self._session.session_deaths)
 
     def _apply_server_sync(self, data):
         """Main-thread handler: mirror web-side state changes (reset, undo) into local trackers."""
@@ -740,30 +1365,52 @@ class App:
             if server_session_deaths >= 0:
                 self._prev_session_deaths = server_session_deaths
 
-            # Sync session deaths from server's session_deaths field
-            # Use total deaths (deaths) only to update the total counter
-            server_total   = data.get("deaths", 0)
+            # Mirror server counters directly. Replaying the diff through
+            # record_death()/subtract_death() makes a stale poll look like a
+            # real click, which can undo a just-logged death and corrupt Fury.
+            server_total   = data.get("total_deaths", data.get("deaths", self._session.total_deaths))
             sess_deaths    = data.get("session_deaths", server_session_deaths)
             if sess_deaths >= 0:
-                sess_diff = sess_deaths - self._session.session_deaths
-                if sess_diff > 0:
-                    for _ in range(sess_diff):
-                        self._deaths.record_death()
-                elif sess_diff < 0:
-                    for _ in range(abs(sess_diff)):
-                        self._deaths.subtract_death()
-            # Sync total deaths directly without going through record_death loop
+                self._session.session_deaths = sess_deaths
             if server_total >= 0:
                 self._session.total_deaths = server_total
                 self._session.save()
+            if "rage_pct" in data:
+                self._apply_rage_update(
+                    float(data.get("rage_pct", 0)),
+                    data.get("rage_name", "Maiden's Grace"),
+                    int(data.get("hollow_streak", 0) or 0),
+                )
             log.info("Death count synced from web: session=%d total=%d",
                      self._session.session_deaths, self._session.total_deaths)
 
-    def _apply_rage_update(self, rage_pct, rage_name):
+    def _apply_rage_update(self, rage_pct, rage_name, hollow_streak=None):
         """Main-thread handler: apply rage values returned by server after boss kill."""
         if self._deaths:
             self._deaths._rage_pct = float(rage_pct)
             self._deaths._consecutive = int(rage_pct / 25)
+            if hollow_streak is not None:
+                self._deaths._hollow_streak = int(hollow_streak)
+
+    def _open_focus_picker(self):
+        """Main-thread handler for the focus hotkey (see _FocusHotkeyBridge)."""
+        if self._tracker:
+            self._tracker.open_focus_picker()
+
+    def _unfocus_current_boss(self):
+        """Main-thread handler for the unfocus hotkey (see _FocusHotkeyBridge)."""
+        if self._tracker:
+            self._tracker.unfocus_current_boss()
+
+    def _defeat_focused_boss(self):
+        """Main-thread handler for the defeat-focused-boss hotkey."""
+        if self._run_ended:
+            log.info("DEFEAT FOCUSED BOSS ignored -- run has ended")
+            return
+        if self._tracker and self._tracker.defeat_focused_boss():
+            log.info("DEFEAT FOCUSED BOSS hotkey applied")
+        else:
+            log.info("DEFEAT FOCUSED BOSS ignored -- no boss focused")
 
     def _do_logout(self):
         from gui.boss_tracker import _load_settings, _save_settings
@@ -812,6 +1459,7 @@ def main():
     _mutex = _ensure_single_instance()
 
     threading.Thread(target=_start_overlay_server, daemon=True).start()
+    threading.Thread(target=_start_catalog_sync, name="questlog-catalog-sync", daemon=True).start()
 
     try:
         app = QApplication(sys.argv)
