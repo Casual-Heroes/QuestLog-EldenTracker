@@ -204,6 +204,7 @@ class App:
         self._save_watcher_slot = 0  # character slot index to poll
         self._save_named_prev  = None  # previous poll's owned-item name set (for diffing)
         self._save_qty_prev    = None  # previous poll's stackable-item quantity dict (for diffing)
+        self._save_auto_collect_submitted = set()  # item keys already submitted from save reconciliation this run
         self._reward_bosses_synced = set()  # boss keys already server-marked from save-owned rewards
         self._active_game_id = None  # game_id of the currently active run, for SaveWatcher setup
         self._active_mode_id = None  # normalized mode_id ("vanilla"/"reforged") of the active run
@@ -343,6 +344,7 @@ class App:
         self._save_watcher    = None
         self._save_named_prev = None
         self._save_qty_prev   = None
+        self._save_auto_collect_submitted = set()
         if game_id == "elden_ring" and mode_id in ("vanilla", "reforged"):
             from gui.boss_tracker import _load_settings, _save_settings
             settings = _load_settings()
@@ -687,6 +689,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
+        self._save_auto_collect_submitted = set()
         self._reward_bosses_synced = set()
         self._active_game_id   = None
         self._active_mode_id   = None
@@ -787,17 +790,16 @@ class App:
     def _poll_save_watcher(self):
         """
         Reads the live save file (if configured) and auto-collects any
-        item the save shows as newly owned, matching it against the
-        current run's seeded item list. Calls the exact same
+        item the save shows as owned, matching it against the current
+        run's seeded item list. Calls the exact same
         collect_item(name) the manual click path already uses (see
         gui/boss_tracker.py ItemsTab._on_row_click) -- this only adds a new
         caller, never a new "how an item gets marked collected" code path.
 
-        The save file's owned-item snapshot only ever grows monotonically
-        within a single character's playthrough (items aren't un-owned by
-        the game), so this deliberately only reacts to newly-appearing
-        names -- it never calls uncollect_item, unlike the manual click
-        path which can toggle either way.
+        This is reconciliation, not just live diffing: items already in
+        inventory before the tracker starts should be checked off too. It
+        never calls uncollect_item, unlike the manual click path which can
+        toggle either way.
         """
         watcher = self._save_watcher
         if watcher is None:
@@ -830,20 +832,41 @@ class App:
             self._save_qty_prev   = {}
 
         newly_named = named_snapshot - self._save_named_prev
+
+        def _bare_item_name(entry):
+            return entry.rsplit(" (", 1)[0] if isinstance(entry, str) and entry.endswith(")") else entry
+
+        def _item_key(name):
+            return str(name or "").strip().casefold()
+
+        owned_by_lower = {
+            _item_key(_bare_item_name(entry)): _bare_item_name(entry)
+            for entry in named_snapshot
+        }
+        for name, qty in qty_snapshot.items():
+            if qty > 0:
+                owned_by_lower[_item_key(name)] = name
+
         uncollected_by_lower = {
-            it["name"].lower(): it["name"] for it in items if not it["collected"]
+            _item_key(it["name"]): it["name"] for it in items if not it["collected"]
         }
 
-        for entry in newly_named:
-            # entry is "Item Name (category)" -- strip the trailing
-            # " (category)" tag to get the bare display name for matching
-            # against the run's item list (which stores bare names).
-            name = entry.rsplit(" (", 1)[0] if entry.endswith(")") else entry
-            match = uncollected_by_lower.get(name.lower())
-            if match:
-                log.info("Live save tracking: auto-collecting %r", match)
+        for item_key, match in list(uncollected_by_lower.items()):
+            if item_key in self._save_auto_collect_submitted:
+                continue
+            if item_key in owned_by_lower:
+                log.info("Live save tracking: auto-collecting %r (already owned in save)", match)
+                self._save_auto_collect_submitted.add(item_key)
                 backend.collect_item(match)
                 self._auto_mark_reward_boss(match)
+                uncollected_by_lower.pop(item_key, None)
+
+        for entry in newly_named:
+            # Keep a specific diff log for new pickups, even though the
+            # reconciliation pass above is authoritative for collection.
+            name = _bare_item_name(entry)
+            if _item_key(name) in owned_by_lower:
+                log.debug("Live save tracking: newly detected owned item %r", name)
 
         # Quantity increases (stackable goods/key items) -- included for
         # parity with tools/live_save_diff.py's approach even though no
@@ -854,11 +877,13 @@ class App:
         for name, qty in qty_snapshot.items():
             prev_qty = self._save_qty_prev.get(name, 0)
             if qty > prev_qty:
-                match = uncollected_by_lower.get(name.lower())
+                match = uncollected_by_lower.get(_item_key(name))
                 if match:
                     log.info("Live save tracking: auto-collecting %r (qty %d -> %d)", match, prev_qty, qty)
+                    self._save_auto_collect_submitted.add(_item_key(name))
                     backend.collect_item(match)
                     self._auto_mark_reward_boss(match)
+                    uncollected_by_lower.pop(_item_key(name), None)
 
         self._save_named_prev = named_snapshot
         self._save_qty_prev   = qty_snapshot
@@ -1148,6 +1173,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
+        self._save_auto_collect_submitted = set()
         self._reward_bosses_synced = set()
         if not path or not os.path.isfile(path):
             return

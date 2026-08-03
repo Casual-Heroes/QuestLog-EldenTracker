@@ -34,6 +34,13 @@ log = get_logger("questlog.save_watcher")
 
 _POLLABLE_ERRORS = (SaveParseError, FileNotFoundError, PermissionError, OSError)
 
+_ERR_ITEM_ID_OVERRIDES = {
+    # ERR changes this vanilla dagger slot in-game; the vanilla save catalog
+    # resolves it as Erdsteel Dagger, which prevents ERR checklist items from
+    # reconciling against the player's actual inventory screen.
+    "00118C30": ("ERR: Weapons", "Brass Dagger"),
+}
+
 
 def read_slot(path: str, slot_index: int):
     """
@@ -110,12 +117,9 @@ class SaveWatcher:
         flags -- deliberately dropped here per this module's items-only
         scope, not because the underlying data doesn't support it).
 
-        Vanilla is checked FIRST and wins: an ID vanilla already resolved
-        must not also be looked up in the ERR catalog, or it would log
-        twice under two different labels for the same item -- only IDs
-        vanilla left unresolved (result.unresolved_item_ids) are checked
-        against the ERR lookup. Same rule tools/live_save_diff.py already
-        established.
+        Vanilla is checked first for normal items. ERR can add unresolved
+        items and can also override specific vanilla IDs when Reforged
+        repurposes or renames a slot.
         """
         result = resolve_slot(slot, self._tables)
         owned = set()
@@ -130,7 +134,33 @@ class SaveWatcher:
                     category, name = match
                     owned.add(f"{name} ({category})")
 
+            for item_id in slot.item_ids:
+                match = _ERR_ITEM_ID_OVERRIDES.get(item_id)
+                if match:
+                    category, name = match
+                    owned.add(f"{name} ({category})")
+
         return owned
+
+    def _resolve_item_name(self, item_id):
+        if self._err_lookup:
+            override = _ERR_ITEM_ID_OVERRIDES.get(item_id)
+            if override:
+                category, name = override
+                return f"{name} ({category})"
+
+        for cat in self._tables.categories.values():
+            info = cat.get(item_id)
+            if info:
+                return info["name"]
+
+        if self._err_lookup:
+            match = self._err_lookup.get(item_id)
+            if match:
+                category, err_name = match
+                return f"{err_name} ({category})"
+
+        return None
 
     def _quantity_snapshot(self, slot_bytes) -> dict:
         """
@@ -143,17 +173,7 @@ class SaveWatcher:
         """
         quantities = {}
         for it in get_inventory_items(slot_bytes):
-            name = None
-            for cat in self._tables.categories.values():
-                info = cat.get(it.item_id)
-                if info:
-                    name = info["name"]
-                    break
-            if not name and self._err_lookup:
-                match = self._err_lookup.get(it.item_id)
-                if match:
-                    category, err_name = match
-                    name = f"{err_name} ({category})"
+            name = self._resolve_item_name(it.item_id)
             if name:
                 quantities[name] = quantities.get(name, 0) + it.quantity
         return quantities
