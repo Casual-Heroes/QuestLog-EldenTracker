@@ -137,6 +137,14 @@ class SaveWatcher:
             for item_id in slot.item_ids:
                 match = _ERR_ITEM_ID_OVERRIDES.get(item_id)
                 if match:
+                    # This ID was already resolved through the vanilla table
+                    # above. Remove that interpretation before adding ERR's;
+                    # otherwise one inventory record can falsely own both the
+                    # vanilla and Reforged items.
+                    for category_name, category_items in self._tables.categories.items():
+                        vanilla_item = category_items.get(item_id)
+                        if vanilla_item and category_name in self._ITEM_CATEGORIES:
+                            owned.discard(f"{vanilla_item['name']} ({category_name})")
                     category, name = match
                     owned.add(f"{name} ({category})")
 
