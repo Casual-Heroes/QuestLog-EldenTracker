@@ -61,8 +61,55 @@ def list_runs():
                     runs.append(json.load(f))
             except Exception:
                 pass
+    runs = _dedupe_runs(runs)
     runs.sort(key=lambda r: r.get("created", 0), reverse=True)
     return runs
+
+
+def _dedupe_runs(runs):
+    """Collapse local stubs that point at the same QuestLog run token.
+
+    Migrations, reconnects, or server-side renames can leave two local run
+    folders for one cloud run. Keep the richest local metadata so save-slot
+    tracking survives, while preferring the newest display name.
+    """
+    by_token = {}
+    local = []
+    for meta in runs:
+        token = meta.get("questlog_token")
+        if not token or token == "__local__":
+            local.append(meta)
+            continue
+
+        current = by_token.get(token)
+        if current is None:
+            by_token[token] = dict(meta)
+            continue
+
+        by_token[token] = _merge_duplicate_run_meta(current, meta)
+
+    return [*by_token.values(), *local]
+
+
+def _merge_duplicate_run_meta(a, b):
+    older, newer = (a, b) if a.get("created", 0) <= b.get("created", 0) else (b, a)
+    merged = dict(older)
+
+    for key in (
+        "questlog_token",
+        "started_at",
+        "save_file_path",
+        "save_slot",
+        "save_character_name",
+        "build_path",
+    ):
+        if not merged.get(key) and newer.get(key) is not None:
+            merged[key] = newer.get(key)
+
+    newer_name = (newer.get("name") or "").strip()
+    if newer_name:
+        merged["name"] = newer_name
+    return merged
 
 
 def create_run(
@@ -187,7 +234,26 @@ def load_active_slug():
     if os.path.isfile(path):
         try:
             with open(path) as f:
-                return json.load(f).get("slug")
+                slug = json.load(f).get("slug")
+            return _canonical_run_slug(slug)
         except Exception:
             pass
     return None
+
+
+def _canonical_run_slug(slug):
+    if not slug:
+        return slug
+    try:
+        active_meta = load_run_meta(slug)
+    except Exception:
+        return slug
+
+    token = active_meta.get("questlog_token")
+    if not token or token == "__local__":
+        return slug
+
+    for meta in list_runs():
+        if meta.get("questlog_token") == token:
+            return meta.get("slug", slug)
+    return slug

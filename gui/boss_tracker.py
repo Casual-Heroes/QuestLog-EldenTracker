@@ -30,7 +30,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
     return QPixmap()
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.2a"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -1028,7 +1028,7 @@ class MortalityTab(QWidget):
             if lifetime_playtime_sec is None:
                 self._survival_card._value_lbl.setText("--")
             else:
-                self._survival_card._value_lbl.setText(_days_hours_display(lifetime_playtime_sec))
+                self._survival_card._value_lbl.setText(_hours_minutes_display(lifetime_playtime_sec))
         else:
             self._survival_card._value_lbl.setText(_run_duration_display(started_at))
 
@@ -1036,7 +1036,6 @@ class MortalityTab(QWidget):
         self._session = session
         self._deaths  = deaths
 
-        self._total_card._value_lbl.setText(str(session.total_deaths))
         self._session_card._value_lbl.setText(str(session.session_deaths))
         self._session_card2._value_lbl.setText(session.elapsed_str())
 
@@ -1045,7 +1044,20 @@ class MortalityTab(QWidget):
         self._dhr_card._value_lbl.setText(str(_dpb))
 
         if ql_sync:
+            if not ql_sync.has_status_snapshot():
+                self._total_card._value_lbl.setText("--")
+                self._boss_deaths_card._value_lbl.setText("--")
+                self._non_boss_deaths_card._value_lbl.setText("--")
+                self._current_boss_card._value_lbl.setText("--")
+                self._items_card._value_lbl.setText("--")
+                self._session_dph_card._value_lbl.setText("--")
+                self._run_dph_card._value_lbl.setText("--")
+                return
             boss_deaths, non_boss_deaths = ql_sync.get_death_split()
+            displayed_total = boss_deaths + non_boss_deaths
+            if displayed_total <= 0:
+                displayed_total = session.total_deaths
+            self._total_card._value_lbl.setText(str(displayed_total))
             self._boss_deaths_card._value_lbl.setText(str(boss_deaths))
             self._non_boss_deaths_card._value_lbl.setText(str(non_boss_deaths))
 
@@ -1076,6 +1088,7 @@ class MortalityTab(QWidget):
             items, collected, total = ql_sync.get_items()
             self._items_card._value_lbl.setText(f"{collected}/{total}")
         else:
+            self._total_card._value_lbl.setText(str(session.total_deaths))
             session_sec = session.elapsed_seconds()
             session_dph = session.session_deaths / (session_sec / 3600) if session_sec > 0 else None
             self._session_dph_card._value_lbl.setText(
@@ -1128,25 +1141,19 @@ class MortalityTab(QWidget):
         self._update_rage_bar_width(pct)
 
 
-def _days_hours_display(total_sec):
-    """Xd HH:MM past a day, HH:MM:SS under a day -- matches the site's Run
-    Duration formatting, which rolls over to days instead of ever-growing
-    triple-digit hours."""
+def _hours_minutes_display(total_sec):
+    """Run Duration as total hours and minutes, without day rollover."""
     total_sec = max(0, int(total_sec))
-    days  = total_sec // 86400
-    hours = (total_sec % 86400) // 3600
+    hours = total_sec // 3600
     mins  = (total_sec % 3600) // 60
-    if days > 0:
-        return f"{days}d {hours:02d}:{mins:02d}"
-    secs = total_sec % 60
-    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    return f"{hours}:{mins:02d}"
 
 
 def _run_duration_display(started_at):
     if not started_at:
         return "--"
     elapsed = int(time.time()) - int(started_at)
-    return _days_hours_display(elapsed)
+    return _hours_minutes_display(elapsed)
 
 
 def _load_settings():

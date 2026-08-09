@@ -308,8 +308,8 @@ class App:
                 run_token, self._api._api_key,
                 on_server_sync=lambda d: self._sync_bridge.synced.emit(d),
                 game_id=meta.get("game_id"),
-                initial_deaths=self._session.total_deaths,
-                initial_session_deaths=self._session.session_deaths,
+                initial_deaths=None,
+                initial_session_deaths=None,
             )
             self._ql_sync.start()
             log.info("QuestLog sync started token=%s", run_token[:12])
@@ -452,6 +452,7 @@ class App:
                 return
             self._session.reset_total_deaths()
             self._deaths.reset()
+            self._reset_live_save_reconciliation()
             log.info("RESET ALL DEATHS")
             if self._ql_sync:
                 self._ql_sync.on_reset()
@@ -1309,16 +1310,26 @@ class App:
             self._session.reset_session_time()   # waits for EXE if game not running
         if self._deaths:
             self._deaths.reset()
+        self._reset_live_save_reconciliation()
         if self._ql_sync:
             self._ql_sync.on_reset()   # clears local timers + POSTs reset-deaths + heartbeat(zeros)
         # Update UI immediately — don't wait for next tick
         self._sync_bridge.synced.emit({
             "deaths":    0,
+            "total_deaths": 0,
+            "session_deaths": 0,
             "rage_pct":  0,
             "rage_name": "Maiden's Grace",
             "reset":     True,
         })
         log.info("Stats reset via settings")
+
+    def _reset_live_save_reconciliation(self):
+        """Let live-save tracking re-check the current save after a full reset."""
+        self._save_named_prev = None
+        self._save_qty_prev = None
+        self._save_auto_collect_submitted = set()
+        self._reward_bosses_synced = set()
 
     def _set_total_deaths(self, value):
         if not self._session:
@@ -1387,10 +1398,21 @@ class App:
         if data.get("reset"):
             self._session.reset_total_deaths()
             self._deaths.reset()
+            self._reset_live_save_reconciliation()
             self._prev_session_deaths = 0
             log.info("Reset synced from web")
         else:
+            def _sync_int(value, default=0):
+                try:
+                    return int(value or 0)
+                except (TypeError, ValueError):
+                    return default
+
             server_session_deaths = data.get("session_deaths", -1)
+            try:
+                server_session_deaths = int(server_session_deaths)
+            except (TypeError, ValueError):
+                server_session_deaths = -1
 
             # New sitting detected — server reset session after grace period
             if server_session_deaths == 0 and self._prev_session_deaths > 0:
@@ -1405,8 +1427,26 @@ class App:
             # Mirror server counters directly. Replaying the diff through
             # record_death()/subtract_death() makes a stale poll look like a
             # real click, which can undo a just-logged death and corrupt Fury.
-            server_total   = data.get("total_deaths", data.get("deaths", self._session.total_deaths))
-            sess_deaths    = data.get("session_deaths", server_session_deaths)
+            server_total = data.get("total_deaths", data.get("deaths"))
+            boss_total = data.get("boss_deaths_total")
+            non_boss_total = data.get("non_boss_deaths_total")
+            if boss_total is not None and non_boss_total is not None:
+                server_total = _sync_int(boss_total) + _sync_int(non_boss_total)
+            elif server_total is None:
+                if boss_total is not None or non_boss_total is not None:
+                    server_total = _sync_int(boss_total) + _sync_int(non_boss_total)
+                else:
+                    server_total = self._session.total_deaths
+            try:
+                server_total = int(server_total)
+            except (TypeError, ValueError):
+                server_total = self._session.total_deaths
+
+            sess_deaths = data.get("session_deaths", server_session_deaths)
+            try:
+                sess_deaths = int(sess_deaths)
+            except (TypeError, ValueError):
+                sess_deaths = server_session_deaths
             if sess_deaths >= 0:
                 self._session.session_deaths = sess_deaths
             if server_total >= 0:

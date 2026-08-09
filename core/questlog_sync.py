@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.2a"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -85,6 +85,7 @@ class QuestLogSync:
         self._longest_life       = 0.0
         self._local_deaths       = int(initial_deaths or 0)
         self._local_deaths_known = initial_deaths is not None
+        self._status_snapshot_ready = initial_deaths is not None
         self._life_start_ts      = None   # when current life began (after last death / start)
         self._total_survival_sec = 0.0    # cumulative alive time across all lives this session
         self._current_boss       = ""     # boss name currently being fought (for death attribution)
@@ -152,9 +153,15 @@ class QuestLogSync:
 
     def _loop(self):
         log.info("Heartbeat loop started — token=%s", self.token[:12] if self.token else "none")
+        self._poll_status()
         _status_counter = 0
         while not self._stop_event.is_set():
             try:
+                if not self._local_deaths_known:
+                    self._poll_status()
+                    if not self._local_deaths_known:
+                        time.sleep(2)
+                        continue
                 now = time.time()
                 game_running = _is_game_running(self._game_id)
                 with self._lock:
@@ -257,8 +264,12 @@ class QuestLogSync:
                     or 0
                 )
 
-            server_deaths         = data.get("deaths", 0)
-            server_session_deaths = data.get("session_deaths", -1)
+            if not any(key in data for key in ("total_deaths", "deaths", "boss_deaths_total", "non_boss_deaths_total")):
+                log.warning("Status poll missing death counters; ignoring payload")
+                return
+
+            server_deaths         = self._status_total_deaths(data)
+            server_session_deaths = self._status_session_deaths(data)
             with self._lock:
                 local         = self._local_deaths
                 local_session = self._local_session_deaths
@@ -272,9 +283,12 @@ class QuestLogSync:
                 with self._lock:
                     self._local_deaths         = server_deaths
                     self._local_deaths_known   = True
+                    self._status_snapshot_ready = True
                     self._local_session_deaths = server_session_deaths if server_session_deaths >= 0 else 0
                 log.info("Death sync baseline initialized: total=%d session=%d",
                          server_deaths, server_session_deaths)
+                if self._on_server_sync:
+                    self._on_server_sync(self._server_sync_payload(data, server_deaths, server_session_deaths))
                 return
 
             # Death/subtract POSTs are asynchronous. A status poll can arrive
@@ -333,23 +347,60 @@ class QuestLogSync:
                         # Grace expired -- reset session stats only, keep longest_life
                         self._reset_session_timers(now)
                 if self._on_server_sync:
-                    self._on_server_sync({
-                        "deaths":         server_deaths,
-                        "rage_pct":       data.get("rage_pct", 0),
-                        "rage_name":      data.get("rage_name", "Maiden's Grace"),
-                        "hollow_streak":   (
-                            data.get("hollow_streak")
-                            or data.get("hollow_count")
-                            or data.get("gone_hollow_count")
-                            or data.get("hollow_deaths")
-                            or data.get("hollow")
-                            or 0
-                        ),
-                        "reset":          server_deaths == 0,
-                        "session_deaths": server_session_deaths,
-                    })
+                    self._on_server_sync(self._server_sync_payload(data, server_deaths, server_session_deaths))
         except Exception as e:
             log.debug("Status poll failed: %s", e)
+
+    def _status_total_deaths(self, status):
+        total = status.get("total_deaths", status.get("deaths"))
+        boss_total = status.get("boss_deaths_total")
+        non_boss_total = status.get("non_boss_deaths_total")
+        if boss_total is not None and non_boss_total is not None:
+            split_total = self._safe_int(boss_total) + self._safe_int(non_boss_total)
+            if total is None or self._safe_int(total) != split_total:
+                if total is not None:
+                    log.warning(
+                        "Death total mismatch from status: total=%s split=%s; using split",
+                        total,
+                        split_total,
+                    )
+                total = split_total
+        elif total is None and (boss_total is not None or non_boss_total is not None):
+            total = self._safe_int(boss_total) + self._safe_int(non_boss_total)
+        return max(0, self._safe_int(total))
+
+    def _safe_int(self, value, default=0):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return default
+
+    def _status_session_deaths(self, status):
+        if "session_deaths" not in status:
+            return -1
+        return max(0, int(status.get("session_deaths") or 0))
+
+    def _server_sync_payload(self, status, total_deaths=None, session_deaths=None):
+        total = self._status_total_deaths(status) if total_deaths is None else total_deaths
+        session = status.get("session_deaths", -1) if session_deaths is None else session_deaths
+        payload = dict(status)
+        payload.update({
+            "deaths": total,
+            "total_deaths": total,
+            "session_deaths": session,
+            "rage_pct": status.get("rage_pct", 0),
+            "rage_name": status.get("rage_name", "Maiden's Grace"),
+            "hollow_streak": (
+                status.get("hollow_streak")
+                or status.get("hollow_count")
+                or status.get("gone_hollow_count")
+                or status.get("hollow_deaths")
+                or status.get("hollow")
+                or 0
+            ),
+            "reset": total == 0,
+        })
+        return payload
 
     def _reset_session_timers(self, now):
         """Reset session-scoped stats only. Keeps run-scoped longest_life. Lock must be held."""
@@ -517,6 +568,11 @@ class QuestLogSync:
         with self._lock:
             return self._boss_deaths_total, self._non_boss_deaths_total
 
+    def has_status_snapshot(self):
+        """True after a server status/death response has initialized counters."""
+        with self._lock:
+            return self._status_snapshot_ready
+
     def get_lifetime_playtime(self):
         """Returns (seconds, formatted_str) -- true lifetime played time, never reset."""
         with self._lock:
@@ -628,10 +684,15 @@ class QuestLogSync:
         if not status:
             return {}
         with self._lock:
-            total_deaths = status.get("total_deaths", status.get("deaths"))
+            has_death_total = any(
+                key in status
+                for key in ("total_deaths", "deaths", "boss_deaths_total", "non_boss_deaths_total")
+            )
+            total_deaths = self._status_total_deaths(status) if has_death_total else None
             if total_deaths is not None:
                 self._local_deaths = max(0, int(total_deaths or 0))
                 self._local_deaths_known = True
+                self._status_snapshot_ready = True
             if "session_deaths" in status:
                 self._local_session_deaths = max(0, int(status.get("session_deaths") or 0))
             if "boss_deaths_total" in status:
