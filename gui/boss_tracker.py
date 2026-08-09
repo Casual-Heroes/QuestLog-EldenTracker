@@ -30,7 +30,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
     return QPixmap()
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -1128,26 +1128,6 @@ class MortalityTab(QWidget):
         self._update_rage_bar_width(pct)
 
 
-_KEYRING_SERVICE = "QuestLog-EldenTracker"
-_KEYRING_USER    = "api_key"
-
-def _keyring_save(api_key: str):
-    try:
-        import keyring
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, api_key)
-        return True
-    except Exception:
-        return False
-
-def _keyring_load() -> str:
-    try:
-        import keyring
-        val = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USER)
-        return val or ""
-    except Exception:
-        return ""
-
-
 def _days_hours_display(total_sec):
     """Xd HH:MM past a day, HH:MM:SS under a day -- matches the site's Run
     Duration formatting, which rolls over to days instead of ever-growing
@@ -1170,6 +1150,14 @@ def _run_duration_display(started_at):
 
 
 def _load_settings():
+    from core.credentials import (
+        CredentialStorageError,
+        atomic_write_json,
+        find_legacy_secret,
+        load_api_key,
+        sanitize_settings,
+        save_api_key,
+    )
     defaults = {
         "opacity":         100,
         "pin":             False,
@@ -1181,39 +1169,42 @@ def _load_settings():
         "hotkey_unfocus":  "f5",
         "hotkey_defeat":   "f11",
         "save_file_path":  "",
-        "api_key":         "",
         "session_token":   "",
         "username":        "",
     }
+    raw = {}
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
-                data = {**defaults, **json.load(f)}
+                raw = json.load(f)
         except Exception:
-            data = defaults
-    else:
-        data = defaults
+            raw = {}
 
-    # Prefer keyring for api_key; fall back to whatever is in settings.json
-    kr_key = _keyring_load()
-    if kr_key:
-        data["api_key"] = kr_key
+    data = {**defaults, **sanitize_settings(raw)}
+
+    legacy_key = find_legacy_secret(raw)
+    if legacy_key:
+        try:
+            save_api_key(legacy_key)
+            atomic_write_json(SETTINGS_FILE, sanitize_settings({**defaults, **raw}))
+        except CredentialStorageError as exc:
+            data["api_key"] = ""
+            data["_credential_error"] = str(exc)
+            return data
+        finally:
+            legacy_key = ""
+
+    try:
+        data["api_key"] = load_api_key()
+    except CredentialStorageError as exc:
+        data["api_key"] = ""
+        data["_credential_error"] = str(exc)
     return data
 
 
 def _save_settings(settings):
-    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-    # Persist api_key to keyring; strip it from the JSON file
-    api_key = settings.get("api_key", "")
-    if api_key:
-        saved_to_keyring = _keyring_save(api_key)
-    else:
-        saved_to_keyring = False
-    on_disk = dict(settings)
-    if saved_to_keyring:
-        on_disk.pop("api_key", None)  # don't duplicate in plaintext
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(on_disk, f, indent=2)
+    from core.credentials import atomic_write_json, sanitize_settings
+    atomic_write_json(SETTINGS_FILE, sanitize_settings(settings))
 
 
 class ItemsTab(QWidget):
@@ -1930,6 +1921,11 @@ class SettingsTab(QWidget):
         # Restore logged-in state if we have saved credentials
         if settings.get("api_key") and settings.get("username"):
             self._set_logged_in(settings["username"])
+        elif settings.get("_credential_error"):
+            self._login_status.setText(
+                "QuestLog login could not be restored securely. Repair Windows Credential Manager and log in again."
+            )
+            self._login_status.setStyleSheet(f"color: {RED_LIVE}; font-size: 11px;")
 
     # ── Save file tracking ───────────────────────────────────────────────────
 
@@ -2098,7 +2094,6 @@ class SettingsTab(QWidget):
         self.login_requested.emit()
 
     def _on_login_success(self, api_key, username, runs):
-        self._settings["api_key"]  = api_key
         self._settings["username"] = username
         _save_settings(self._settings)
         self._set_logged_in(username)

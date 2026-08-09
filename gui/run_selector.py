@@ -27,7 +27,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 
-from core.run import list_runs, create_run, delete_run, load_run_meta
+from core.run import list_runs, create_run, delete_run, load_run_meta, update_run_meta
 from games.registry import list_games
 
 BG_BASE      = "#09090f"
@@ -763,4 +763,32 @@ class RunSelectorWidget(QWidget):
         self._reset_refresh_btn()
         self._server_active  = active_runs  or []
         self._server_history = run_history or []
+        self._sync_linked_local_runs_from_server()
         self._populate_runs()
+
+    def _sync_linked_local_runs_from_server(self):
+        """Mirror server-side run display metadata onto linked local stubs."""
+        server_by_token = {}
+        for run in [*self._server_active, *self._server_history]:
+            token = run.get("token")
+            if token:
+                server_by_token[token] = run
+        if not server_by_token:
+            return
+
+        for meta in list_runs():
+            token = meta.get("questlog_token")
+            if not token or token == "__local__":
+                continue
+            server_run = server_by_token.get(token)
+            if not server_run:
+                continue
+
+            updates = {}
+            server_name = (server_run.get("build_name") or server_run.get("name") or "").strip()
+            if server_name and server_name != meta.get("name"):
+                updates["name"] = server_name
+            if server_run.get("started_at") and server_run.get("started_at") != meta.get("started_at"):
+                updates["started_at"] = server_run.get("started_at")
+            if updates:
+                update_run_meta(meta["slug"], updates)

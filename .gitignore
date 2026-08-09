@@ -66,6 +66,7 @@ release_build/
 
 # easyocr model cache (downloaded on first run)
 .EasyOCR/
+.tmp_soulstruct_home/
 
 # Backups and archives
 *.zip
@@ -95,3 +96,4 @@ tools/export_weapon_skill_corrections.py
 core/param_reader.py
 core/regulation_bin.py
 core/err_reference_data.py
+tools/ds3_scan_archives.py

@@ -946,9 +946,9 @@ class App:
         active_runs = profile.get("active_runs", [])
         run_history = profile.get("run_history", [])
 
-        # Save credentials so session persists across restarts
+        # Save non-secret profile state only. The listener key is stored by
+        # QuestLogClient.login() in Windows Credential Manager when possible.
         s = _load_settings()
-        s["api_key"]  = api_key
         s["username"] = username
         _save_settings(s)
 
@@ -961,6 +961,17 @@ class App:
             self._tracker.settings_tab.login_succeeded.emit(api_key, username, active_runs)
         else:
             self._on_login_succeeded(api_key, username, active_runs)
+        credential_warning = profile.get("_credential_warning") if isinstance(profile, dict) else ""
+        if credential_warning:
+            log.warning("QuestLog credential will not persist: %s", credential_warning)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self._selector_win,
+                "QuestLog Login Not Saved",
+                "QuestLog login worked for this session, but Windows Credential "
+                "Manager could not store it securely. You will need to log in "
+                "again after restarting EldenTracker.",
+            )
 
         log.info("Login OK — %r, active=%d history=%d", username, len(active_runs), len(run_history))
 
@@ -1440,8 +1451,9 @@ class App:
 
     def _do_logout(self):
         from gui.boss_tracker import _load_settings, _save_settings
+        from core.credentials import delete_api_key
+        delete_api_key()
         s = _load_settings()
-        s["api_key"] = ""
         s["session_token"] = ""
         s["username"] = ""
         _save_settings(s)
