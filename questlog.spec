@@ -17,6 +17,8 @@ a = Analysis(
         'PyQt6.QtCore',
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
+        'keyring',
+        'keyring.backends.Windows',
     ],
     hookspath=[],
     hooksconfig={},

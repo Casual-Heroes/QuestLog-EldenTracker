@@ -1,5 +1,6 @@
 psutil
 keyboard
 requests
+keyring
 PyQt6
 pyinstaller

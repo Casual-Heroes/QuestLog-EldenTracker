@@ -4,20 +4,28 @@ All session calls are fire-and-forget (daemon threads). Never blocks the UI or h
 """
 
 import secrets
+import re
 import threading
 import time
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs
 from core.crash_logger import get_logger
 from core.catalog_sync import CatalogStore
+from core.credentials import CredentialStorageError, save_api_key
 
 log = get_logger("questlog.api")
 
 BASE_URL        = "https://questlog.casual-heroes.com"
 AUTH_PORT       = 9457
 REQUEST_TIMEOUT = 5
-APP_VERSION     = "1.1.0"
+APP_VERSION     = "1.1.1"
+STATE_RE        = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
+_LOGIN_LOCK     = threading.Lock()
+
+
+class LoginError(Exception):
+    pass
 
 
 def _fire(fn, *args, **kwargs):
@@ -71,57 +79,92 @@ class QuestLogClient:
     @staticmethod
     def login(on_success, on_error):
         """
-        Opens browser to QuestLog SSO, spins up localhost:9457 callback server,
-        exchanges code for api_key, fetches active runs.
+        Opens browser to QuestLog SSO, spins up a 127.0.0.1:9457 callback
+        server, verifies the returned state, exchanges code for api_key,
+        fetches active runs, and stores the key in Windows Credential Manager
+        when available.
         Calls on_success(api_key, username, runs) or on_error(str).
         Must be called from a non-Qt thread.
         """
         import requests
 
-        csrf_state = secrets.token_urlsafe(16)
-        result = {"code": None, "state": None}
+        if not _LOGIN_LOCK.acquire(blocking=False):
+            on_error("A QuestLog login is already in progress.")
+            return
+
+        expected_state = secrets.token_urlsafe(32)
+        result = {"code": None, "error": None}
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                log.info("OAuth callback: path=%r", self.path)
-                qs = parse_qs(urlparse(self.path).query)
-                returned_state = qs.get("state", [None])[0]
-                code           = qs.get("code",  [None])[0]
-                log.info("OAuth params: code=%r state_returned=%r state_expected=%r",
-                         code, returned_state, csrf_state)
-
-                # Always accept -- state is not echoed by this site's OAuth flow
-                if not code:
-                    # favicon.ico or other stray browser request -- ignore silently
+                if result["code"] or result["error"]:
                     self.send_response(204)
                     self.end_headers()
                     return
-
-                result["code"]  = code
-                result["state"] = returned_state or csrf_state
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(b"""<html><body style="background:#09090f;color:#c9a84c;
-                    font-family:sans-serif;text-align:center;padding:60px">
-                    <h2>Connected to QuestLog!</h2>
-                    <p style="color:#6b7280">You can close this window.</p>
-                    <script>setTimeout(()=>window.close(),2000)</script>
-                    </body></html>""")
+                try:
+                    parsed = urlparse(self.path)
+                    if parsed.path != "/callback":
+                        raise LoginError("Unexpected desktop login callback path.")
+                    qs = parse_qs(parsed.query)
+                    if len(qs.get("code", [])) != 1 or len(qs.get("state", [])) != 1:
+                        raise LoginError("Desktop login callback was incomplete.")
+                    code = qs.get("code", [""])[0]
+                    returned_state = qs.get("state", [""])[0]
+                    if not code or not returned_state:
+                        raise LoginError("Desktop login callback was incomplete.")
+                    if not STATE_RE.fullmatch(returned_state):
+                        raise LoginError("Desktop login state was malformed.")
+                    if not secrets.compare_digest(returned_state, expected_state):
+                        raise LoginError("Desktop login state did not match.")
+                    result["code"] = code
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(b"""<html><body style="background:#09090f;color:#c9a84c;
+                        font-family:sans-serif;text-align:center;padding:60px">
+                        <h2>Connected to QuestLog!</h2>
+                        <p style="color:#6b7280">You can close this window.</p>
+                        <script>setTimeout(()=>window.close(),2000)</script>
+                        </body></html>""")
+                except LoginError as exc:
+                    result["error"] = str(exc)
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(b"""<html><body style="background:#09090f;color:#ef4444;
+                        font-family:sans-serif;text-align:center;padding:60px">
+                        <h2>QuestLog login failed.</h2>
+                        <p style="color:#94a3b8">Return to EldenTracker and start a fresh login.</p>
+                        </body></html>""")
 
             def log_message(self, *args):
                 pass
 
+        server = None
         try:
-            server = HTTPServer(("localhost", AUTH_PORT), _Handler)
-            server.timeout = 2        # short poll interval so we can check deadline
-            webbrowser.open(f"{BASE_URL}/listener/auth/?state={csrf_state}")
+            server = HTTPServer(("127.0.0.1", AUTH_PORT), _Handler)
+            server.timeout = 2
+            webbrowser.open(
+                f"{BASE_URL}/listener/auth/?"
+                + urlencode({"state": expected_state})
+            )
             deadline = time.monotonic() + 120
-            while not result["code"] and time.monotonic() < deadline:
+            while not result["code"] and not result["error"] and time.monotonic() < deadline:
                 server.handle_request()  # returns after each request OR after timeout secs
-            server.server_close()
         except Exception as e:
             on_error(f"Login server error: {e}")
+            return
+        finally:
+            try:
+                if server is not None:
+                    server.server_close()
+            except Exception:
+                pass
+            expected_state = ""
+            _LOGIN_LOCK.release()
+
+        if result["error"]:
+            on_error(result["error"])
             return
 
         if not result["code"]:
@@ -151,6 +194,11 @@ class QuestLogClient:
 
         api_key  = data["api_key"]
         username = data.get("username", "")
+        credential_warning = ""
+        try:
+            save_api_key(api_key)
+        except CredentialStorageError as exc:
+            credential_warning = str(exc)
 
         try:
             profile_r = _session.get(
@@ -162,6 +210,9 @@ class QuestLogClient:
         except Exception as e:
             on_error(f"Could not fetch profile: {e}")
             return
+
+        if credential_warning and isinstance(profile, dict):
+            profile["_credential_warning"] = credential_warning
 
         on_success(api_key, username, profile)
 
