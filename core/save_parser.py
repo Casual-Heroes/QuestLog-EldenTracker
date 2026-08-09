@@ -28,6 +28,7 @@ NAME_OFFSETS = [
     0x190288A, 0x1902AD6, 0x1902D22, 0x1902F6E, 0x19031BA,
 ]
 NAME_LEN = 32  # bytes (16 UTF-16 code units)
+ACTIVE_SLOT_FLAGS_OFFSET = NAME_OFFSETS[0] - SLOT_COUNT
 
 INVENTORY_PATTERN     = bytes([0xB0, 0xAD, 0x01, 0x00, 0x01, 0xFF, 0xFF, 0xFF])
 INVENTORY_PATTERN_DLC = bytes([0xB0, 0xAD, 0x01, 0x00, 0x01])
@@ -58,6 +59,20 @@ def get_names(data: bytes) -> list:
         name = raw.decode("utf-16-le", errors="ignore").replace("\x00", "")
         names.append(name)
     return names
+
+
+def get_active_slot_flags(data: bytes) -> list:
+    """
+    Return the 10 game-visible character slot flags from UserData10.
+
+    Elden Ring can leave stale profile summaries behind after a character is
+    deleted. The in-game load menu uses this active-slots table, not just the
+    non-empty summary names.
+    """
+    raw = data[ACTIVE_SLOT_FLAGS_OFFSET:ACTIVE_SLOT_FLAGS_OFFSET + SLOT_COUNT]
+    if len(raw) != SLOT_COUNT:
+        return [True] * SLOT_COUNT
+    return [value != 0 for value in raw]
 
 
 def get_slot(data: bytes, index: int) -> bytes:
@@ -294,9 +309,10 @@ def parse_save_bytes(data: bytes) -> list:
         raise SaveParseError(f"not a valid save file (missing {MAGIC!r} magic bytes)")
 
     names = get_names(data)
+    active_slots = get_active_slot_flags(data)
     slots = []
     for i, name in enumerate(names):
-        if not name:
+        if not name or not active_slots[i]:
             continue
         slot = get_slot(data, i)
         event_flags = get_event_flags(slot)

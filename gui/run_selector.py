@@ -26,6 +26,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
     return QPixmap()
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
+UPDATE_URL = SITE_URL + "/soulslike/"
 
 from core.run import list_runs, create_run, delete_run, load_run_meta, update_run_meta
 from games.registry import list_games
@@ -189,24 +190,31 @@ class NewRunPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self._populate_modes()
-        self.mode_combo.currentIndexChanged.connect(self._populate_save_slots)
+        self.mode_combo.currentIndexChanged.connect(lambda: self._populate_save_slots(prefer_current=False))
 
         row.addWidget(self.game_combo, 1)
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
 
+        save_lbl = QLabel("LOAD SAVE TO TRACK")
+        save_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        save_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px; background: transparent; border: none;")
+        save_lbl.setToolTip("Choose the character slot EldenTracker scans for this run.")
+        layout.addWidget(save_lbl)
+
         save_row = QHBoxLayout()
         save_row.setSpacing(12)
         self.save_combo = QComboBox()
-        self.save_combo.setToolTip("Character slot to scan for automatic item tracking")
-        refresh_save_btn = QPushButton("Refresh Characters")
+        self.save_combo.setToolTip("Character slot EldenTracker will scan for automatic item tracking.")
+        refresh_save_btn = QPushButton("Reload Saves")
+        refresh_save_btn.setToolTip("Reload Elden Ring character slots from your save files.")
         refresh_save_btn.setFixedHeight(34)
-        refresh_save_btn.clicked.connect(self._populate_save_slots)
+        refresh_save_btn.clicked.connect(lambda: self._populate_save_slots(prefer_current=True))
         save_row.addWidget(self.save_combo, 1)
         save_row.addWidget(refresh_save_btn)
         layout.addLayout(save_row)
         self._select_saved_save_mode()
-        self._populate_save_slots()
+        self._populate_save_slots(prefer_current=False)
 
         local_row = QHBoxLayout()
         local_row.setSpacing(8)
@@ -257,11 +265,17 @@ class NewRunPanel(QWidget):
             return
         for m in self._games[idx]["modes"]:
             self.mode_combo.addItem(m["name"], m["id"])
-        self._populate_save_slots()
+        self._populate_save_slots(prefer_current=False)
 
-    def _populate_save_slots(self):
+    def _same_save_choice(self, left, right) -> bool:
+        if not left or not right:
+            return False
+        return left.get("path") == right.get("path") and left.get("slot") == right.get("slot")
+
+    def _populate_save_slots(self, prefer_current=False):
         if not hasattr(self, "save_combo"):
             return
+        previous_choice = self.save_combo.currentData() if prefer_current else None
         self.save_combo.clear()
         game_id = self.game_combo.currentData()
         mode_id = self.mode_combo.currentData()
@@ -284,20 +298,23 @@ class NewRunPanel(QWidget):
             selected_index = -1
             candidates = [c for c in find_save_files() if c["mode"] == mode_id]
             if not candidates:
-                self.save_combo.addItem("No save file found - configure in Settings", None)
+                self.save_combo.addItem("No Elden Ring save found - configure in Settings", None)
                 return
             for c in candidates:
                 watcher = SaveWatcher(c["path"], mode=mode_id)
                 slots = watcher.list_slots()
                 for slot in slots:
-                    label = f"{slot['name']}  -  Slot {slot['index'] + 1}  -  {mode_id.title()}"
+                    label = f"{slot['name']}  -  Slot {slot['index']} / Game Slot {slot['index'] + 1}  -  {mode_id.title()}"
                     row_index = self.save_combo.count()
                     self.save_combo.addItem(label, {
                         "path": c["path"],
                         "slot": slot["index"],
                         "name": slot["name"],
                     })
-                    if selected_index < 0 and current_path == c["path"] and current_slot == slot["index"]:
+                    choice = self.save_combo.itemData(row_index)
+                    if selected_index < 0 and self._same_save_choice(previous_choice, choice):
+                        selected_index = row_index
+                    elif selected_index < 0 and current_path == c["path"] and current_slot == slot["index"]:
                         selected_index = row_index
                     elif (
                         selected_index < 0
@@ -309,7 +326,7 @@ class NewRunPanel(QWidget):
             if selected_index >= 0:
                 self.save_combo.setCurrentIndex(selected_index)
         except Exception:
-            self.save_combo.addItem("Could not read save slots - configure in Settings", None)
+            self.save_combo.addItem("Could not read Elden Ring saves - configure in Settings", None)
 
     def _select_saved_save_mode(self):
         try:
@@ -462,6 +479,7 @@ class RunSelectorWidget(QWidget):
         self.setPalette(pal)
         self._server_active  = []  # active runs from last profile fetch
         self._server_history = []  # run history from last profile fetch
+        self._update_url = UPDATE_URL
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -541,6 +559,23 @@ class RunSelectorWidget(QWidget):
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setVisible(False)
         h_layout.addWidget(self.refresh_btn)
+
+        self.update_btn = QPushButton("UPDATE AVAILABLE")
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setFixedHeight(32)
+        self.update_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(201,168,76,0.16); border: 1px solid {ACCENT_GOLD};
+                border-radius: 6px; color: {ACCENT_GOLD};
+                padding: 6px 14px; font-size: 11px; font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: rgba(201,168,76,0.26); }}
+        """)
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self._update_url)))
+        self.update_btn.setVisible(False)
+        h_layout.addWidget(self.update_btn)
 
         settings_btn = QPushButton("Settings")
         settings_btn.setToolTip("Settings")
@@ -647,6 +682,14 @@ class RunSelectorWidget(QWidget):
             }}
         """)
         self.refresh_btn.setVisible(True)
+
+    def set_update_available(self, info):
+        version = str((info or {}).get("version") or "").strip()
+        self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
+        label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
+        self.update_btn.setText(label.upper())
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setVisible(True)
 
     def set_server_runs_loading(self):
         self.refresh_btn.setEnabled(False)
