@@ -561,7 +561,7 @@ class RunSelectorWidget(QWidget):
         h_layout.addWidget(self.refresh_btn)
 
         self.update_btn = QPushButton("UPDATE AVAILABLE")
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setFixedHeight(32)
         self.update_btn.setStyleSheet(f"""
             QPushButton {{
@@ -688,7 +688,7 @@ class RunSelectorWidget(QWidget):
         self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
         label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
         self.update_btn.setText(label.upper())
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setVisible(True)
 
     def set_server_runs_loading(self):

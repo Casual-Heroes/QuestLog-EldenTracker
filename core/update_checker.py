@@ -61,6 +61,6 @@ def check_for_update(current_version, timeout=4):
     return {
         "version": tag.lstrip("v"),
         "tag": tag,
-        "release_url": payload.get("html_url") or "",
+        "release_url": DOWNLOAD_PAGE,
         "download_url": DOWNLOAD_PAGE,
     }

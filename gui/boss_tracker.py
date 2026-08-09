@@ -2330,7 +2330,7 @@ class BossTrackerWindow(QMainWindow):
 
         self.update_btn = QPushButton("UPDATE AVAILABLE")
         self.update_btn.setFixedHeight(30)
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2417,7 +2417,7 @@ class BossTrackerWindow(QMainWindow):
         self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
         label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
         self.update_btn.setText(label.upper())
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setVisible(True)
 
     def _open_settings_dialog(self):
