@@ -190,24 +190,31 @@ class NewRunPanel(QWidget):
 
         self.mode_combo = QComboBox()
         self._populate_modes()
-        self.mode_combo.currentIndexChanged.connect(self._populate_save_slots)
+        self.mode_combo.currentIndexChanged.connect(lambda: self._populate_save_slots(prefer_current=False))
 
         row.addWidget(self.game_combo, 1)
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
 
+        save_lbl = QLabel("LOAD SAVE TO TRACK")
+        save_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        save_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px; background: transparent; border: none;")
+        save_lbl.setToolTip("Choose the character slot EldenTracker scans for this run.")
+        layout.addWidget(save_lbl)
+
         save_row = QHBoxLayout()
         save_row.setSpacing(12)
         self.save_combo = QComboBox()
-        self.save_combo.setToolTip("Character slot to scan for automatic item tracking")
-        refresh_save_btn = QPushButton("Refresh Characters")
+        self.save_combo.setToolTip("Character slot EldenTracker will scan for automatic item tracking.")
+        refresh_save_btn = QPushButton("Reload Saves")
+        refresh_save_btn.setToolTip("Reload Elden Ring character slots from your save files.")
         refresh_save_btn.setFixedHeight(34)
-        refresh_save_btn.clicked.connect(self._populate_save_slots)
+        refresh_save_btn.clicked.connect(lambda: self._populate_save_slots(prefer_current=True))
         save_row.addWidget(self.save_combo, 1)
         save_row.addWidget(refresh_save_btn)
         layout.addLayout(save_row)
         self._select_saved_save_mode()
-        self._populate_save_slots()
+        self._populate_save_slots(prefer_current=False)
 
         local_row = QHBoxLayout()
         local_row.setSpacing(8)
@@ -258,11 +265,17 @@ class NewRunPanel(QWidget):
             return
         for m in self._games[idx]["modes"]:
             self.mode_combo.addItem(m["name"], m["id"])
-        self._populate_save_slots()
+        self._populate_save_slots(prefer_current=False)
 
-    def _populate_save_slots(self):
+    def _same_save_choice(self, left, right) -> bool:
+        if not left or not right:
+            return False
+        return left.get("path") == right.get("path") and left.get("slot") == right.get("slot")
+
+    def _populate_save_slots(self, prefer_current=False):
         if not hasattr(self, "save_combo"):
             return
+        previous_choice = self.save_combo.currentData() if prefer_current else None
         self.save_combo.clear()
         game_id = self.game_combo.currentData()
         mode_id = self.mode_combo.currentData()
@@ -285,20 +298,23 @@ class NewRunPanel(QWidget):
             selected_index = -1
             candidates = [c for c in find_save_files() if c["mode"] == mode_id]
             if not candidates:
-                self.save_combo.addItem("No save file found - configure in Settings", None)
+                self.save_combo.addItem("No Elden Ring save found - configure in Settings", None)
                 return
             for c in candidates:
                 watcher = SaveWatcher(c["path"], mode=mode_id)
                 slots = watcher.list_slots()
                 for slot in slots:
-                    label = f"{slot['name']}  -  Slot {slot['index'] + 1}  -  {mode_id.title()}"
+                    label = f"{slot['name']}  -  Slot {slot['index']} / Game Slot {slot['index'] + 1}  -  {mode_id.title()}"
                     row_index = self.save_combo.count()
                     self.save_combo.addItem(label, {
                         "path": c["path"],
                         "slot": slot["index"],
                         "name": slot["name"],
                     })
-                    if selected_index < 0 and current_path == c["path"] and current_slot == slot["index"]:
+                    choice = self.save_combo.itemData(row_index)
+                    if selected_index < 0 and self._same_save_choice(previous_choice, choice):
+                        selected_index = row_index
+                    elif selected_index < 0 and current_path == c["path"] and current_slot == slot["index"]:
                         selected_index = row_index
                     elif (
                         selected_index < 0
@@ -310,7 +326,7 @@ class NewRunPanel(QWidget):
             if selected_index >= 0:
                 self.save_combo.setCurrentIndex(selected_index)
         except Exception:
-            self.save_combo.addItem("Could not read save slots - configure in Settings", None)
+            self.save_combo.addItem("Could not read Elden Ring saves - configure in Settings", None)
 
     def _select_saved_save_mode(self):
         try:

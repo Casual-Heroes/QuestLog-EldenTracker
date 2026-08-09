@@ -31,7 +31,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 UPDATE_URL  = SITE_URL + "/soulslike/"
-APP_VERSION = "1.1.2b"
+APP_VERSION = "1.1.2c"
 
 SETTINGS_FILE = _data_path("settings.json")
 
