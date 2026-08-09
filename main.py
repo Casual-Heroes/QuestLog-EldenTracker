@@ -86,6 +86,9 @@ class _LeaderboardSubmitReady(QObject):
     succeeded = pyqtSignal()
     failed    = pyqtSignal(str)   # error message
 
+class _UpdateReady(QObject):
+    available = pyqtSignal(dict)
+
 
 def _start_overlay_server():
     overlay_dir = _overlay_path()
@@ -244,9 +247,39 @@ class App:
         self._leaderboard_submit_bridge.succeeded.connect(self._on_leaderboard_submit_succeeded)
         self._leaderboard_submit_bridge.failed.connect(self._on_leaderboard_submit_failed)
 
+        self._update_bridge = _UpdateReady()
+        self._update_bridge.available.connect(self._on_update_available)
+        self._available_update = None
+
     def start(self):
         self._selector_win.show()
         self._restore_login()
+        QTimer.singleShot(1500, self._check_for_updates)
+
+    def _check_for_updates(self):
+        def _worker():
+            try:
+                from core.api_client import APP_VERSION
+                from core.update_checker import check_for_update
+                update = check_for_update(APP_VERSION)
+                if update:
+                    self._update_bridge.available.emit(update)
+            except Exception:
+                log.exception("Update check failed")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_available(self, info):
+        self._available_update = info
+        try:
+            self._selector_win._widget.set_update_available(info)
+        except Exception:
+            log.exception("Failed to update selector update notice")
+        if self._tracker:
+            try:
+                self._tracker.set_update_available(info)
+            except Exception:
+                log.exception("Failed to update tracker update notice")
 
     # ── Run lifecycle ─────────────────────────────────────────────────────────
 
@@ -558,6 +591,8 @@ class App:
             on_boss_mark=on_boss_mark if self._ql_sync else None,
             ql_sync=self._ql_sync,
         )
+        if self._available_update:
+            self._tracker.set_update_available(self._available_update)
         if self._local_run:
             self._tracker.items_tab.set_local_run(self._local_run)
             self._tracker.death_log_tab.set_active(True)

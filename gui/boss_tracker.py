@@ -30,6 +30,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
     return QPixmap()
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
+UPDATE_URL  = SITE_URL + "/soulslike/"
 APP_VERSION = "1.1.2a"
 
 SETTINGS_FILE = _data_path("settings.json")
@@ -2224,6 +2225,7 @@ class BossTrackerWindow(QMainWindow):
         self._api         = api
         self._ql_sync     = ql_sync
         self._on_boss_mark = on_boss_mark
+        self._update_url  = UPDATE_URL
         self._settings    = _load_settings()
         self._closing     = False
 
@@ -2326,9 +2328,27 @@ class BossTrackerWindow(QMainWindow):
         """)
         settings_btn.clicked.connect(self._open_settings_dialog)
 
+        self.update_btn = QPushButton("UPDATE AVAILABLE")
+        self.update_btn.setFixedHeight(30)
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(201,168,76,0.16); border: 1px solid {ACCENT_GOLD};
+                border-radius: 6px; color: {ACCENT_GOLD};
+                padding: 0 12px; font-size: 10px; font-weight: 700;
+                letter-spacing: 0.5px;
+            }}
+            QPushButton:hover {{ background: rgba(201,168,76,0.26); }}
+        """)
+        self.update_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self._update_url)))
+        self.update_btn.setVisible(False)
+
         h_layout.addWidget(self.switch_btn)
         h_layout.addSpacing(4)
         h_layout.addWidget(self.pin_btn)
+        h_layout.addSpacing(4)
+        h_layout.addWidget(self.update_btn)
         h_layout.addSpacing(4)
         h_layout.addWidget(settings_btn)
         h_layout.addSpacing(8)
@@ -2391,6 +2411,14 @@ class BossTrackerWindow(QMainWindow):
             self._apply_pin(True)
         if self._settings.get("compact", False):
             self._on_compact(True)
+
+    def set_update_available(self, info):
+        version = str((info or {}).get("version") or "").strip()
+        self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
+        label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
+        self.update_btn.setText(label.upper())
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setVisible(True)
 
     def _open_settings_dialog(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout

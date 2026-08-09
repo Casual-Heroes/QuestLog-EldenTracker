@@ -26,6 +26,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
     return QPixmap()
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
+UPDATE_URL = SITE_URL + "/soulslike/"
 
 from core.run import list_runs, create_run, delete_run, load_run_meta, update_run_meta
 from games.registry import list_games
@@ -462,6 +463,7 @@ class RunSelectorWidget(QWidget):
         self.setPalette(pal)
         self._server_active  = []  # active runs from last profile fetch
         self._server_history = []  # run history from last profile fetch
+        self._update_url = UPDATE_URL
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -541,6 +543,23 @@ class RunSelectorWidget(QWidget):
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setVisible(False)
         h_layout.addWidget(self.refresh_btn)
+
+        self.update_btn = QPushButton("UPDATE AVAILABLE")
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setFixedHeight(32)
+        self.update_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(201,168,76,0.16); border: 1px solid {ACCENT_GOLD};
+                border-radius: 6px; color: {ACCENT_GOLD};
+                padding: 6px 14px; font-size: 11px; font-weight: 700;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: rgba(201,168,76,0.26); }}
+        """)
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self._update_url)))
+        self.update_btn.setVisible(False)
+        h_layout.addWidget(self.update_btn)
 
         settings_btn = QPushButton("Settings")
         settings_btn.setToolTip("Settings")
@@ -647,6 +666,14 @@ class RunSelectorWidget(QWidget):
             }}
         """)
         self.refresh_btn.setVisible(True)
+
+    def set_update_available(self, info):
+        version = str((info or {}).get("version") or "").strip()
+        self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
+        label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
+        self.update_btn.setText(label.upper())
+        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setVisible(True)
 
     def set_server_runs_loading(self):
         self.refresh_btn.setEnabled(False)
