@@ -982,8 +982,8 @@ class App:
         active_runs = profile.get("active_runs", [])
         run_history = profile.get("run_history", [])
 
-        # Save non-secret profile state only. The listener key is stored by
-        # QuestLogClient.login() in Windows Credential Manager when possible.
+        # Save non-secret profile state only. QuestLogClient.login() stores the
+        # listener key in the current Windows user's DPAPI-protected app data.
         s = _load_settings()
         s["username"] = username
         _save_settings(s)
@@ -1003,10 +1003,10 @@ class App:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self._selector_win,
-                "QuestLog Login Not Saved",
-                "QuestLog login worked for this session, but Windows Credential "
-                "Manager could not store it securely. You will need to log in "
-                "again after restarting EldenTracker.",
+                "QuestLog Login Not Remembered",
+                "QuestLog login worked for this session, but EldenTracker could "
+                "not save the remember-me token securely. You may need to log in "
+                "again after restarting the app.",
             )
 
         log.info("Login OK — %r, active=%d history=%d", username, len(active_runs), len(run_history))

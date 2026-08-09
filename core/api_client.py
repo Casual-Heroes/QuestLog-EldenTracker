@@ -81,8 +81,7 @@ class QuestLogClient:
         """
         Opens browser to QuestLog SSO, spins up a 127.0.0.1:9457 callback
         server, verifies the returned state, exchanges code for api_key,
-        fetches active runs, and stores the key in Windows Credential Manager
-        when available.
+        fetches active runs, and stores the key with Windows DPAPI.
         Calls on_success(api_key, username, runs) or on_error(str).
         Must be called from a non-Qt thread.
         """

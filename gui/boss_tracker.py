@@ -1931,7 +1931,7 @@ class SettingsTab(QWidget):
             self._set_logged_in(settings["username"])
         elif settings.get("_credential_error"):
             self._login_status.setText(
-                "QuestLog login could not be restored securely. Repair Windows Credential Manager and log in again."
+                "QuestLog login could not be remembered. Please log in again."
             )
             self._login_status.setStyleSheet(f"color: {RED_LIVE}; font-size: 11px;")
 
