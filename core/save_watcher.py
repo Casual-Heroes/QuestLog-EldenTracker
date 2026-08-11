@@ -28,6 +28,7 @@ from core.save_parser import (
 )
 from core.save_data import SaveDataTables, resolve_slot
 from core.err_debug_tool_data import get_lookup as get_err_lookup
+from core.live_catalog_item_lookup import get_lookup as get_live_catalog_lookup
 from core.crash_logger import get_logger
 
 log = get_logger("questlog.save_watcher")
@@ -92,6 +93,7 @@ class SaveWatcher:
         self.save_path = save_path
         self.mode = mode
         self._tables = SaveDataTables(include_dlc=True)
+        self._live_lookup = get_live_catalog_lookup(mode)
         self._err_lookup = get_err_lookup() if mode == "reforged" else None
 
     def list_slots(self) -> list:
@@ -127,13 +129,18 @@ class SaveWatcher:
             names = result.owned_items.get(category, [])
             owned |= {f"{name} ({category})" for name in names}
 
-        if self._err_lookup:
-            for item_id in result.unresolved_item_ids:
+        for item_id in result.unresolved_item_ids:
+            match = self._live_lookup.get(item_id)
+            if match:
+                category, name = match
+                owned.add(f"{name} ({category})")
+            elif self._err_lookup:
                 match = self._err_lookup.get(item_id)
                 if match:
                     category, name = match
                     owned.add(f"{name} ({category})")
 
+        if self._err_lookup:
             for item_id in slot.item_ids:
                 match = _ERR_ITEM_ID_OVERRIDES.get(item_id)
                 if match:
@@ -161,6 +168,11 @@ class SaveWatcher:
             info = cat.get(item_id)
             if info:
                 return info["name"]
+
+        match = self._live_lookup.get(item_id)
+        if match:
+            category, name = match
+            return f"{name} ({category})"
 
         if self._err_lookup:
             match = self._err_lookup.get(item_id)

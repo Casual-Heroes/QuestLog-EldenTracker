@@ -25,6 +25,7 @@ _CATEGORIES_FILE = os.path.join(_RESOURCES_DIR, "ItemCategories.txt")
 
 _lookup = None  # hex_id -> (category_label, name), built lazily
 _lookups_by_root = {}  # resources_dir -> hex_id -> (category_label, name), for build_lookup()
+_MAGIC_ITEM_ID_BASE = 0x40000000
 
 
 def _parse_categories_file(path: str) -> list:
@@ -99,10 +100,42 @@ def build_lookup(resources_dir: str) -> dict:
     return lookup
 
 
+def _merge_live_spells(lookup: dict) -> None:
+    """
+    Merge QuestLog's synced ERR spell catalog into the save lookup.
+
+    ERR's debug text resources can lag behind newer spell rows. The app
+    already ships and syncs spells_err.json for the build planner, and those
+    IDs map to save inventory magic IDs by adding the goods/magic base.
+    """
+    try:
+        from core.catalog_sync import CatalogStore
+        payload = CatalogStore().load_live("spells_err")
+    except Exception:
+        return
+
+    spells = payload.get("spells") if isinstance(payload, dict) else None
+    if not isinstance(spells, list):
+        return
+    for spell in spells:
+        if not isinstance(spell, dict):
+            continue
+        name = str(spell.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            raw_id = int(spell.get("id"))
+        except (TypeError, ValueError):
+            continue
+        full_id = raw_id if raw_id >= _MAGIC_ITEM_ID_BASE else raw_id + _MAGIC_ITEM_ID_BASE
+        lookup[f"{full_id:08X}"] = ("ERR: Magic", name)
+
+
 def get_lookup() -> dict:
     """Returns hex_id -> (category_label, name) for ERR. Built once, cached."""
     global _lookup
     if _lookup is not None:
         return _lookup
     _lookup = build_lookup(_RESOURCES_DIR)
+    _merge_live_spells(_lookup)
     return _lookup

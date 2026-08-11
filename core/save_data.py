@@ -34,10 +34,12 @@ class SaveDataTables:
         bearings  = {"bell_bearings": _load("bell_bearings.json")["bell_bearings"]}
         whetblades = {"whetblades": _load("whetblades.json")["whetblades"]}
         paintings = {"paintings": _load("paintings.json")["paintings"]}
+        crystal_tears = {"crystal_tears": _load("crystal_tears.json")["crystal_tears"]}
 
         self.categories = {
             **all_items,
             **bosses, **graces, **cookbooks, **bearings, **whetblades, **paintings,
+            **crystal_tears,
         }
 
         if include_dlc:

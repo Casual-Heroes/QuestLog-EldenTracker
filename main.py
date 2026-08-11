@@ -18,6 +18,7 @@ from PyQt6.QtGui import QIcon
 
 from core.paths import assets as _assets_path, overlay as _overlay_path
 _ICO_CH = _assets_path("CH.ico")
+from core.item_name_normalizer import item_key as _save_item_key
 from core.run import load_run_meta, get_run_dir, save_active_slug, update_run_meta
 from core.session import Session
 from core.deaths import DeathTracker
@@ -873,7 +874,7 @@ class App:
             return entry.rsplit(" (", 1)[0] if isinstance(entry, str) and entry.endswith(")") else entry
 
         def _item_key(name):
-            return str(name or "").strip().casefold()
+            return _save_item_key(name)
 
         owned_by_lower = {
             _item_key(_bare_item_name(entry)): _bare_item_name(entry)
