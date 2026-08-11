@@ -26,7 +26,7 @@ EldenTracker is built by [Casual Heroes](https://questlog.casual-heroes.com) for
 | Game | Support |
 |------|---------|
 | Elden Ring | Base game and Shadow of the Erdtree |
-| Elden Ring Reforged | ERR and DLC support |
+| Elden Ring Reforged | ERR and Shadow of the Erdtree |
 
 More Soulslike games may be added later, but the current app is focused on Elden Ring and Elden Ring Reforged.
 
