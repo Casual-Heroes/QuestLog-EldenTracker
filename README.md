@@ -142,7 +142,7 @@ The tracker starts the local overlay server automatically while the app is runni
 Download the latest release from:
 
 - [QuestLog EldenTracker releases](https://github.com/Casual-Heroes/QuestLog-EldenTracker/releases)
-- [QuestLog](https://questlog.casual-heroes.com)
+- [QuestLog EldenTracker](https://questlog.casual-heroes.com/soulslike/tracker/)
 
 Extract the ZIP and run:
 
