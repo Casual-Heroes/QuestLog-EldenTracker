@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.1.2e"
+APP_VERSION = "1.2.0"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names

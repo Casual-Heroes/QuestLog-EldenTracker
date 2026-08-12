@@ -11,11 +11,13 @@ Response shape consumed here matches the doc's "Build detail response"
 QuestLogClient/QuestLogSync.get_build_detail(build_id)).
 """
 
+from datetime import datetime
 from math import floor
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QTabWidget, QSizePolicy, QGridLayout, QLineEdit, QDialog, QComboBox,
+    QPlainTextEdit, QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -111,6 +113,54 @@ def _saved_or_minimum_level(build, stats, class_base, class_obj, game):
     except (TypeError, ValueError):
         stored = minimum
     return min(cap, max(minimum, stored))
+
+
+def _class_required_level(class_obj, target_stats, game="elden_ring"):
+    """
+    Local optimal-class formula from QuestLog's desktop handoff.
+
+    Required level = starting class level + points needed above that
+    class's base stats. Higher class bases than the target are allowed and
+    simply count as unavoidable stat points the class already owns.
+    """
+    cap = 200 if game == "err" else 713
+    try:
+        level = int(class_obj.get("level", 1) or 1)
+    except (TypeError, ValueError):
+        level = 1
+    for stat in STAT_NAMES:
+        try:
+            target = int(target_stats.get(stat, 1) or 1)
+        except (TypeError, ValueError):
+            target = 1
+        try:
+            base = int(class_obj.get(stat, 1) or 1)
+        except (TypeError, ValueError):
+            base = 1
+        level += max(0, target - base)
+    return min(cap, level)
+
+
+def _optimal_classes(classes, target_stats, game="elden_ring"):
+    results = []
+    for class_obj in classes or []:
+        if not isinstance(class_obj, dict):
+            continue
+        results.append((class_obj, _class_required_level(class_obj, target_stats, game)))
+    if not results:
+        return None, []
+    best_level = min(level for _class_obj, level in results)
+    winners = [class_obj for class_obj, level in results if level == best_level]
+    winners.sort(key=lambda c: (str(c.get("name", "")), int(c.get("id", 0) or 0)))
+    return best_level, winners
+
+
+def _same_class_id(left, right):
+    left_id = _numeric_id(left)
+    right_id = _numeric_id(right)
+    if left_id is not None and right_id is not None:
+        return left_id == right_id
+    return left == right
 
 
 def _numeric_id(value):
@@ -374,17 +424,207 @@ class StatRow(QWidget):
             self._bar_fill.setFixedWidth(int(self._bar_track.width() * pct))
 
 
+class BuildHistoryDialog(QDialog):
+    """Cloud build revision history with one-click restore."""
+
+    restore_requested = pyqtSignal(int)
+
+    def __init__(self, history_payload, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Build History")
+        self.setMinimumSize(520, 520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("BUILD HISTORY")
+        title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {ACCENT_GOLD2}; letter-spacing: 1px; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        help_lbl = QLabel("Restore creates a new current revision. Older versions stay in history.")
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
+        layout.addWidget(help_lbl)
+
+        revisions = self._extract_revisions(history_payload)
+        if not revisions:
+            empty = QLabel("No history found for this build yet.")
+            empty.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
+            layout.addWidget(empty)
+            layout.addStretch()
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border: none;")
+        container = QWidget()
+        rows = QVBoxLayout(container)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(8)
+        for revision in revisions:
+            rows.addWidget(self._build_row(revision))
+        rows.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+
+    @staticmethod
+    def _extract_revisions(payload):
+        if isinstance(payload, list):
+            revisions = payload
+        elif isinstance(payload, dict):
+            revisions = (
+                payload.get("history")
+                or payload.get("revisions")
+                or payload.get("versions")
+                or payload.get("results")
+                or []
+            )
+        else:
+            revisions = []
+        return [revision for revision in revisions if isinstance(revision, dict)]
+
+    def _build_row(self, revision):
+        version = revision.get("version") or revision.get("revision") or revision.get("id")
+        title = f"Version {version}" if version not in ("", None) else "Revision"
+        timestamp = self._format_timestamp(
+            revision.get("created_at") or revision.get("updated_at") or revision.get("saved_at")
+        )
+        changes = self._format_changes(revision.get("changes") or [])
+
+        card = QWidget()
+        card.setStyleSheet(f"background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID}; border-radius: 6px;")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(10, 8, 10, 8)
+        row.setSpacing(10)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        name_lbl = QLabel(str(title))
+        name_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent; border: none;")
+        meta_parts = []
+        build_name = revision.get("name") or revision.get("build_name")
+        if build_name:
+            meta_parts.append(str(build_name))
+        if timestamp:
+            meta_parts.append(timestamp)
+        meta_lbl = QLabel(" - ".join(part for part in meta_parts if part))
+        meta_lbl.setStyleSheet(f"color: {ACCENT_GOLD}; background: transparent; border: none;")
+        text_col.addWidget(name_lbl)
+        text_col.addWidget(meta_lbl)
+        if changes:
+            for change_text in changes[:5]:
+                changes_lbl = QLabel(change_text)
+                changes_lbl.setWordWrap(True)
+                changes_lbl.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
+                text_col.addWidget(changes_lbl)
+            if len(changes) > 5:
+                more_lbl = QLabel(f"+{len(changes) - 5} more changes")
+                more_lbl.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
+                text_col.addWidget(more_lbl)
+        else:
+            changes_lbl = QLabel("No tracked changes")
+            changes_lbl.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
+            text_col.addWidget(changes_lbl)
+        restore_btn = QPushButton("Restore")
+        restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        restore_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {ACCENT_GOLD}; border-radius: 6px;
+                          color: {ACCENT_GOLD}; padding: 6px 10px; font-size: 10px; font-weight: bold; }}
+            QPushButton:hover {{ background: rgba(201,168,76,0.08); }}
+        """)
+        restore_btn.clicked.connect(lambda _=False, v=version: self._restore(v))
+        row.addLayout(text_col, 1)
+        row.addWidget(restore_btn)
+        return card
+
+    @staticmethod
+    def _format_timestamp(value):
+        if value in ("", None):
+            return ""
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(value).strftime("%b %d, %Y %I:%M %p")
+            except Exception:
+                return str(value)
+        text = str(value)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.strftime("%b %d, %Y %I:%M %p")
+        except Exception:
+            return text
+
+    @staticmethod
+    def _format_value(value):
+        if value in ("", None):
+            return "Empty"
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if isinstance(value, dict):
+            return str(value.get("name") or value.get("label") or value.get("value") or "Changed")
+        if isinstance(value, (list, tuple)):
+            return ", ".join(BuildHistoryDialog._format_value(item) for item in value) or "Empty"
+        return str(value)
+
+    @classmethod
+    def _format_fallback_change(cls, value):
+        if isinstance(value, dict):
+            parts = []
+            for key, item in value.items():
+                label = str(key).replace("_", " ").title()
+                parts.append(f"{label}: {cls._format_value(item)}")
+            return "; ".join(parts) or "Changed"
+        if isinstance(value, (list, tuple)):
+            return ", ".join(cls._format_fallback_change(item) for item in value if item) or "Changed"
+        return str(value)
+
+    @classmethod
+    def _format_change(cls, change):
+        if isinstance(change, str):
+            return change
+        if not isinstance(change, dict):
+            return cls._format_fallback_change(change)
+
+        label = change.get("label") or change.get("field") or change.get("path") or "Changed"
+        category = change.get("category")
+        before = cls._format_value(change.get("before"))
+        after = cls._format_value(change.get("after"))
+        if before == after:
+            return f"{label}: {after}"
+        prefix = f"{category}: " if category else ""
+        return f"{prefix}{label}: {before} -> {after}"
+
+    @classmethod
+    def _format_changes(cls, changes):
+        if isinstance(changes, dict):
+            changes = [changes]
+        if not isinstance(changes, list):
+            return [cls._format_fallback_change(changes)] if changes else []
+        return [cls._format_change(change) for change in changes if change]
+
+    def _restore(self, version):
+        version_id = _numeric_id(version)
+        if version_id is None:
+            return
+        self.restore_requested.emit(version_id)
+        self.accept()
+
+
 class ClassPickerDialog(QDialog):
     """
-    Grid of class buttons (name + starting level), same idea as the web's
-    Class tab. Picking one resets every attribute to that class's base
-    stats (see CharacterColumn._apply_class).
+    Class picker with a site-style optimizer tab. Normal class picks reset to
+    that class's bases; optimizer picks preserve the current target stats.
     """
-    def __init__(self, classes, parent=None):
+    def __init__(self, classes, parent=None, target_stats=None, game="elden_ring", current_class_id=None, initial_tab="class"):
         super().__init__(parent)
         self.setWindowTitle("Choose Class")
-        self.setMinimumSize(360, 420)
+        self.setMinimumSize(430, 560)
         self._selected = None
+        self._preserve_stats = False
+        self._classes = classes or []
+        self._target_stats = target_stats or {}
+        self._game = game
+        self._current_class_id = current_class_id
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -394,29 +634,116 @@ class ClassPickerDialog(QDialog):
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         layout.addWidget(title)
 
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {BORDER_SOLID}; border-radius: 6px; background: {BG_BASE}; }}
+            QTabBar::tab {{ background: transparent; color: {TEXT_MUTED}; padding: 8px 14px; font-weight: bold; letter-spacing: 1px; }}
+            QTabBar::tab:selected {{ color: {ACCENT_GOLD2}; border-bottom: 2px solid {ACCENT_GOLD}; }}
+        """)
+        self._tabs.addTab(self._build_class_tab(), "CLASS")
+        self._tabs.addTab(self._build_optimizer_tab(), "OPTIMIZER")
+        if initial_tab == "optimizer":
+            self._tabs.setCurrentIndex(1)
+        layout.addWidget(self._tabs)
+
+    def _build_class_tab(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("border: none;")
         container = QWidget()
         grid = QGridLayout(container)
         grid.setSpacing(8)
-        for i, c in enumerate(classes):
+        for i, c in enumerate(self._classes):
             btn = QPushButton(f"{c.get('name', '?')}\nLv {c.get('level', '?')}")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setMinimumHeight(56)
-            btn.clicked.connect(lambda _, cls=c: self._choose(cls))
+            btn.setStyleSheet(f"""
+                QPushButton {{ text-align: left; background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID};
+                              border-radius: 6px; color: {TEXT_PRIMARY}; padding: 8px; font-weight: bold; }}
+                QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD2}; }}
+            """)
+            btn.clicked.connect(lambda _, cls=c: self._choose(cls, preserve_stats=False))
             grid.addWidget(btn, i // 2, i % 2)
         scroll.setWidget(container)
-        layout.addWidget(scroll)
+        return scroll
 
-    def _choose(self, class_obj):
+    def _build_optimizer_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        hint = QLabel("Ranks classes by the rune level needed for the current target stats.")
+        hint.setWordWrap(True)
+        hint.setFont(QFont("Segoe UI", 8))
+        hint.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        ranked = []
+        for class_obj in self._classes:
+            ranked.append((class_obj, _class_required_level(class_obj, self._target_stats, self._game)))
+        ranked.sort(key=lambda item: (item[1], str(item[0].get("name", "")), int(item[0].get("id", 0) or 0)))
+
+        if not ranked:
+            empty = QLabel("No class data available.")
+            empty.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
+            layout.addWidget(empty)
+            layout.addStretch()
+            return page
+
+        best_level = ranked[0][1]
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border: none;")
+        container = QWidget()
+        rows = QVBoxLayout(container)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(6)
+        for class_obj, required_level in ranked:
+            rows.addWidget(self._optimizer_row(class_obj, required_level, best_level))
+        rows.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+        return page
+
+    def _optimizer_row(self, class_obj, required_level, best_level):
+        btn = QPushButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setMinimumHeight(54)
+        delta = required_level - best_level
+        is_current = _same_class_id(class_obj.get("id"), self._current_class_id)
+        if delta == 0:
+            status = "OPTIMAL"
+        else:
+            status = f"+{delta} vs best"
+        current = "  CURRENT" if is_current else ""
+        btn.setText(f"{class_obj.get('name', 'Unknown')}{current}\nLv {required_level}  {status}")
+        if delta == 0:
+            border = ACCENT_GOLD
+            status_color = ACCENT_GOLD2
+        else:
+            border = BORDER_SOLID
+            status_color = TEXT_MUTED
+        btn.setStyleSheet(f"""
+            QPushButton {{ text-align: left; background: {BG_SURFACE}; border: 1px solid {border};
+                          border-radius: 6px; color: {TEXT_PRIMARY}; padding: 8px; font-weight: bold; }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD2}; }}
+            QPushButton:disabled {{ color: {status_color}; }}
+        """)
+        btn.clicked.connect(lambda _, cls=class_obj: self._choose(cls, preserve_stats=True))
+        return btn
+
+    def _choose(self, class_obj, preserve_stats=False):
         self._selected = class_obj
+        self._preserve_stats = preserve_stats
         self.accept()
 
     @staticmethod
-    def pick(classes, parent=None):
-        dlg = ClassPickerDialog(classes, parent)
+    def pick(classes, parent=None, target_stats=None, game="elden_ring", current_class_id=None, initial_tab="class", return_mode=False):
+        dlg = ClassPickerDialog(classes, parent, target_stats, game, current_class_id, initial_tab)
         dlg.exec()
+        if return_mode:
+            return dlg._selected, dlg._preserve_stats
         return dlg._selected
 
 
@@ -1240,6 +1567,34 @@ class CharacterColumn(QWidget):
         level_row.addLayout(level_text, 1)
         level_row.addWidget(self._level_lbl)
         attr_layout.addLayout(level_row)
+
+        optimal_row = QHBoxLayout()
+        optimal_row.setContentsMargins(0, 4, 0, 0)
+        optimal_row.setSpacing(10)
+        optimal_text = QVBoxLayout()
+        optimal_text.setSpacing(1)
+        optimal_title = QLabel("OPTIMAL CLASS")
+        optimal_title.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        optimal_title.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 1px; background: transparent; border: none;")
+        self._optimal_lbl = QLabel("--")
+        self._optimal_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self._optimal_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent; border: none;")
+        self._optimal_lbl.setWordWrap(True)
+        optimal_text.addWidget(optimal_title)
+        optimal_text.addWidget(self._optimal_lbl)
+        self._use_optimal_btn = QPushButton("View")
+        self._use_optimal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._use_optimal_btn.setFixedWidth(54)
+        self._use_optimal_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                          color: {TEXT_MUTED}; padding: 4px 8px; font-size: 9px; }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD}; }}
+            QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self._use_optimal_btn.clicked.connect(self._open_optimizer)
+        optimal_row.addLayout(optimal_text, 1)
+        optimal_row.addWidget(self._use_optimal_btn)
+        attr_layout.addLayout(optimal_row)
         outer.addWidget(attr_panel)
 
         char_panel, char_layout = _panel("CHARACTER")
@@ -1281,7 +1636,7 @@ class CharacterColumn(QWidget):
         caps_by_stat = {c["stat"]: c for c in caps_list} if caps_list else {}
         classes = self._refdata.get("classes", [])
         class_id = build.get("class_id")
-        class_obj = next((c for c in classes if c.get("id") == class_id), None)
+        class_obj = next((c for c in classes if _same_class_id(c.get("id"), class_id)), None)
 
         for stat_key, row in self._stat_rows.items():
             if class_obj:
@@ -1363,12 +1718,13 @@ class CharacterColumn(QWidget):
         game = build.get("_game", "elden_ring")
         base_stats = self.current_stats()
         classes = self._refdata.get("classes", [])
-        class_obj = next((c for c in classes if c.get("id") == build.get("class_id")), None)
+        class_obj = next((c for c in classes if _same_class_id(c.get("id"), build.get("class_id"))), None)
         class_base = {s: class_obj.get(s, 1) for s in base_stats} if class_obj else {s: 1 for s in base_stats}
         minimum_level = calc_level(base_stats, class_base, class_obj, game)
         current_level = _saved_or_minimum_level(build, base_stats, class_base, class_obj, game)
         self._level_lbl.setText(str(current_level))
         self._level_hint_lbl.setText(f"Minimum from stats: {minimum_level}")
+        self._update_optimal_class(base_stats, class_obj, game)
         rune_inventory = build.get("rune_inventory", []) or []
         talismans = build.get("talismans", []) or []
         talisman_mods = _talisman_modifiers(talismans)
@@ -1453,14 +1809,78 @@ class CharacterColumn(QWidget):
         self._char_stat_lbls["weight"].setToolTip("")
         self._char_stat_lbls["roll_type"].setText(roll_type)
 
+    def _update_optimal_class(self, target_stats, current_class, game):
+        best_level, winners = _optimal_classes(self._refdata.get("classes", []), target_stats, game)
+        if best_level is None or not winners:
+            self._optimal_lbl.setText("No class data")
+            self._use_optimal_btn.setEnabled(False)
+            self._use_optimal_btn.setToolTip("Class data is not available yet.")
+            return
+
+        current_id = current_class.get("id") if current_class else None
+        current_level = _class_required_level(current_class, target_stats, game) if current_class else None
+        current_is_best = current_class is not None and any(
+            _same_class_id(winner.get("id"), current_id) for winner in winners
+        )
+        names = [str(winner.get("name", "Unknown")) for winner in winners]
+        display_name = names[0]
+        tie_note = f" · {len(names)} tied" if len(names) > 1 else ""
+
+        if current_is_best and current_level == best_level:
+            self._optimal_lbl.setText(f"{display_name}\nLv {best_level} · current{tie_note}")
+            self._use_optimal_btn.setEnabled(True)
+            self._use_optimal_btn.setToolTip("View the full optimizer ranking.")
+            return
+
+        delta = ""
+        if current_level is not None:
+            savings = current_level - best_level
+            if savings > 0:
+                delta = f" · saves {savings}"
+            elif savings < 0:
+                delta = f" · +{abs(savings)}"
+        self._optimal_lbl.setText(f"{display_name}\nLv {best_level}{tie_note}{delta}")
+        self._use_optimal_btn.setEnabled(True)
+        self._use_optimal_btn.setToolTip("View the full optimizer ranking.")
+
+    def _open_optimizer(self):
+        classes = self._refdata.get("classes", [])
+        if not classes or not self._build:
+            return
+        picked, preserve_stats = ClassPickerDialog.pick(
+            classes,
+            parent=self,
+            target_stats=self.current_stats(),
+            game=self._build.get("_game", "elden_ring"),
+            current_class_id=self._build.get("class_id"),
+            initial_tab="optimizer",
+            return_mode=True,
+        )
+        if not picked:
+            return
+        if preserve_stats:
+            self._apply_class_preserve_stats(picked, self.current_stats())
+        else:
+            self._apply_class(picked)
+
     def _open_class_picker(self):
         classes = self._refdata.get("classes", [])
         if not classes:
             return
-        picked = ClassPickerDialog.pick(classes, parent=self)
+        picked, preserve_stats = ClassPickerDialog.pick(
+            classes,
+            parent=self,
+            target_stats=self.current_stats(),
+            game=self._build.get("_game", "elden_ring") if self._build else "elden_ring",
+            current_class_id=self._build.get("class_id") if self._build else None,
+            return_mode=True,
+        )
         if not picked:
             return
-        self._apply_class(picked)
+        if preserve_stats:
+            self._apply_class_preserve_stats(picked, self.current_stats())
+        else:
+            self._apply_class(picked)
 
     def _apply_class(self, class_obj):
         """
@@ -1473,6 +1893,27 @@ class CharacterColumn(QWidget):
         for stat_key, row in self._stat_rows.items():
             row.set_floor(class_obj.get(stat_key, 1))
             row.set_value(class_obj.get(stat_key, 1), row._last_caps)
+        self._update_class_label(class_obj, class_obj.get("id"))
+        self._recompute_derived()
+        self.class_changed.emit(class_obj.get("id"))
+        self.stats_changed.emit()
+
+    def _apply_class_preserve_stats(self, class_obj, target_stats):
+        """
+        Used by the optimizer: change the starting class while preserving the
+        build's current target stats instead of resetting everything to base.
+        """
+        if self._build is not None:
+            self._build["class_id"] = class_obj.get("id")
+        caps_list = self._refdata.get("stat_caps", [])
+        caps_by_stat = {c["stat"]: c for c in caps_list} if caps_list else {}
+        for stat_key, row in self._stat_rows.items():
+            floor_value = class_obj.get(stat_key, 1)
+            row.set_floor(floor_value)
+            row.set_value(
+                max(target_stats.get(stat_key, floor_value), floor_value),
+                caps_by_stat.get(stat_key, row._last_caps),
+            )
         self._update_class_label(class_obj, class_obj.get("id"))
         self._recompute_derived()
         self.class_changed.emit(class_obj.get("id"))
@@ -2272,6 +2713,8 @@ class SummaryColumn(QWidget):
     """Column 3: Attack Rating panel + build info (name, level, playstyle, description)."""
 
     _ar_computed = pyqtSignal(dict)  # background thread -> main thread handoff, {slot: {"name":..., "ar":int|None, "error":str|None}}
+    visibility_changed = pyqtSignal(bool)
+    metadata_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2305,10 +2748,14 @@ class SummaryColumn(QWidget):
         outer.addWidget(ar_panel)
 
         info_panel, info_layout = _panel("BUILD INFO")
-        self._name_lbl = QLabel("—")
-        self._name_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self._name_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent; border: none;")
-        self._name_lbl.setWordWrap(True)
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("Build name")
+        self._name_edit.setStyleSheet(f"""
+            QLineEdit {{ background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                        color: {TEXT_PRIMARY}; padding: 7px 8px; font-weight: bold; }}
+            QLineEdit:focus {{ border-color: {ACCENT_GOLD}; }}
+        """)
+        self._name_edit.textEdited.connect(self._emit_metadata)
 
         self._level_lbl = QLabel("—")
         self._level_lbl.setFont(QFont("Segoe UI", 10))
@@ -2318,35 +2765,62 @@ class SummaryColumn(QWidget):
         self._tag_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self._tag_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 1px; background: transparent; border: none;")
 
+        self._visibility_help = QLabel("")
+        self._visibility_help.setFont(QFont("Segoe UI", 8))
+        self._visibility_help.setWordWrap(True)
+        self._visibility_help.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
+
+        self._visibility_btn = QPushButton("Make Public")
+        self._visibility_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._visibility_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                          color: {ACCENT_GOLD}; padding: 6px 8px; font-size: 10px; font-weight: bold; }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; background: rgba(201,168,76,0.08); }}
+            QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self._visibility_btn.clicked.connect(self._toggle_visibility)
+        self._is_public = False
+        self._is_local = False
+
         self._author_lbl = QLabel("")
         self._author_lbl.setFont(QFont("Segoe UI", 9))
         self._author_lbl.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
 
-        self._desc_lbl = QLabel("")
-        self._desc_lbl.setFont(QFont("Segoe UI", 10))
-        self._desc_lbl.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent; border: none;")
-        self._desc_lbl.setWordWrap(True)
+        self._desc_edit = QPlainTextEdit()
+        self._desc_edit.setPlaceholderText("Description")
+        self._desc_edit.setFixedHeight(72)
+        self._desc_edit.setStyleSheet(f"""
+            QPlainTextEdit {{ background: {BG_SURFACE}; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                              color: {TEXT_PRIMARY}; padding: 7px 8px; }}
+            QPlainTextEdit:focus {{ border-color: {ACCENT_GOLD}; }}
+        """)
+        self._desc_edit.textChanged.connect(self._emit_metadata)
+        self._loading = False
 
-        info_layout.addWidget(self._name_lbl)
+        info_layout.addWidget(self._name_edit)
         info_layout.addWidget(self._level_lbl)
         info_layout.addWidget(self._tag_lbl)
+        info_layout.addWidget(self._visibility_help)
+        info_layout.addWidget(self._visibility_btn)
         info_layout.addWidget(self._author_lbl)
-        info_layout.addWidget(self._desc_lbl)
+        info_layout.addWidget(self._desc_edit)
         outer.addWidget(info_panel)
 
         outer.addStretch()
 
     def load(self, build, refdata=None, api=None, ar_variant_cache=None,
              enkindle_selections=None, enkindle_affixes_by_name=None):
-        self._name_lbl.setText(build.get("name", "Untitled Build"))
+        self._loading = True
+        self._name_edit.setText(build.get("name", "Untitled Build"))
         self._level_lbl.setText(f"Level {build.get('level', '—')}  ·  {build.get('tag', 'pve').upper()}")
-        self._tag_lbl.setText("PUBLIC" if build.get("is_public") else "PRIVATE")
+        self._is_public = bool(build.get("is_public"))
+        self._is_local = bool(build.get("_is_local"))
+        self._refresh_visibility()
         author = build.get("author", "")
         self._author_lbl.setText(f"by {author}" if author else "")
         self._author_lbl.setVisible(bool(author))
-        desc = build.get("description", "")
-        self._desc_lbl.setText(desc)
-        self._desc_lbl.setVisible(bool(desc))
+        self._desc_edit.setPlainText(build.get("description", ""))
+        self._loading = False
 
         for slot, (row, _name_lbl, _ar_lbl) in self._ar_rows.items():
             row.setVisible(False)
@@ -2412,6 +2886,43 @@ class SummaryColumn(QWidget):
             self._ar_computed.emit(results)
         threading.Thread(target=_fetch, daemon=True).start()
 
+    def _refresh_visibility(self):
+        if self._is_local:
+            self._tag_lbl.setText("LOCAL")
+            self._tag_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 1px; background: transparent; border: none;")
+            self._visibility_help.setText("This build is saved only on this PC and is never shared.")
+            self._visibility_btn.setVisible(False)
+            return
+
+        if self._is_public:
+            self._tag_lbl.setText("PUBLIC")
+            self._tag_lbl.setStyleSheet(f"color: {GREEN_LIVE}; letter-spacing: 1px; background: transparent; border: none;")
+            self._visibility_help.setText("Public builds can be viewed by other QuestLog users if shared or discovered.")
+            self._visibility_btn.setText("Make Private")
+            self._visibility_btn.setToolTip("Hide this build from public QuestLog views.")
+        else:
+            self._tag_lbl.setText("PRIVATE")
+            self._tag_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 1px; background: transparent; border: none;")
+            self._visibility_help.setText("Private builds stay in your QuestLog account until you choose to publish them.")
+            self._visibility_btn.setText("Make Public")
+            self._visibility_btn.setToolTip("Publish this build so others can view it on QuestLog.")
+        self._visibility_btn.setVisible(True)
+
+    def _toggle_visibility(self):
+        if self._is_local:
+            return
+        self._is_public = not self._is_public
+        self._refresh_visibility()
+        self.visibility_changed.emit(self._is_public)
+
+    def _emit_metadata(self):
+        if self._loading:
+            return
+        self.metadata_changed.emit({
+            "name": self._name_edit.text().strip() or "Untitled Build",
+            "description": self._desc_edit.toPlainText().strip(),
+        })
+
     def _apply_ar_results(self, results):
         any_shown = False
         for slot, (row, name_lbl, ar_lbl) in self._ar_rows.items():
@@ -2437,6 +2948,11 @@ class BuildPlannerWidget(QWidget):
     _build_loaded     = pyqtSignal(dict)  # background thread -> main thread handoff for _load_build()
     _refdata_fetched  = pyqtSignal(str, dict)  # game, {classes,stat_caps,derived_curves,ar_data} -- see _fetch_refdata
     _save_result      = pyqtSignal(dict)  # background thread -> main thread handoff for _save_current_build()
+    _delete_result    = pyqtSignal(dict)
+    _run_created      = pyqtSignal(dict)
+    _history_fetched  = pyqtSignal(dict)
+    _history_restored = pyqtSignal(dict)
+    start_run_requested = pyqtSignal(dict)
     _enkindling_fetched = pyqtSignal(dict)  # background thread -> main thread handoff for the one-time /err/enkindling/ fetch
     _eligible_fetched   = pyqtSignal(str, str, list)  # (slot, aow_name, affixes) -- background thread -> main thread handoff for one eligible-affix fetch
 
@@ -2447,6 +2963,10 @@ class BuildPlannerWidget(QWidget):
         self._build_loaded.connect(self._show_build)
         self._refdata_fetched.connect(self._on_refdata_fetched)
         self._save_result.connect(self._on_save_result)
+        self._delete_result.connect(self._on_delete_result)
+        self._run_created.connect(self._on_run_created_from_build)
+        self._history_fetched.connect(self._on_history_fetched)
+        self._history_restored.connect(self._on_history_restored)
         self._enkindling_fetched.connect(self._on_enkindling_fetched)
         self._eligible_fetched.connect(self._on_eligible_fetched)
         self._refdata = {}       # game -> {classes, stat_caps, derived_curves, ar_data}
@@ -2469,6 +2989,7 @@ class BuildPlannerWidget(QWidget):
 
         from PyQt6.QtWidgets import QComboBox
         self._game_selector = QComboBox()
+        self._game_selector.setEditable(False)
         self._game_selector.addItem("Elden Ring", userData="elden_ring")
         self._game_selector.addItem("ERR (Reforged)", userData="err")
         self._game_selector.setItemData(1, "Elden Ring Reforged", Qt.ItemDataRole.ToolTipRole)
@@ -2478,7 +2999,8 @@ class BuildPlannerWidget(QWidget):
             QComboBox QAbstractItemView {{ background: {BG_CARD}; border: 1px solid {BORDER_SOLID};
                                            color: {TEXT_PRIMARY}; selection-background-color: rgba(201,168,76,0.15); }}
         """)
-        self._game_selector.currentIndexChanged.connect(lambda _: self.refresh_list())
+        self._game_selector.activated.connect(self._on_game_selector_activated)
+        self._game_selector.view().pressed.connect(self._on_game_selector_pressed)
         list_layout.addWidget(self._game_selector)
 
         self._search = QLineEdit()
@@ -2554,6 +3076,8 @@ class BuildPlannerWidget(QWidget):
         self._char_col = CharacterColumn()
         self._equip_col = EquipmentColumn()
         self._summary_col = SummaryColumn()
+        self._summary_col.visibility_changed.connect(self._on_visibility_changed)
+        self._summary_col.metadata_changed.connect(self._on_metadata_changed)
 
         self._char_col.setFixedWidth(244)     # 16px narrower than the wrapping scroll area to leave room for its scrollbar
         self._equip_col.setMinimumWidth(420)
@@ -2606,6 +3130,36 @@ class BuildPlannerWidget(QWidget):
         """)
         self._save_btn.clicked.connect(self._save_current_build)
 
+        self._start_run_btn = QPushButton("Create Run from Build")
+        self._start_run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._start_run_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {GREEN_LIVE}; border-radius: 6px;
+                          color: {GREEN_LIVE}; padding: 8px 16px; font-size: 11px; font-weight: 700; }}
+            QPushButton:hover {{ background: rgba(34,197,94,0.08); }}
+            QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self._start_run_btn.clicked.connect(self._start_run_from_build)
+
+        self._history_btn = QPushButton("History")
+        self._history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._history_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                          color: {TEXT_MUTED}; padding: 8px 16px; font-size: 11px; }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD}; }}
+            QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self._history_btn.clicked.connect(self._open_build_history)
+
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._delete_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {BORDER_SOLID}; border-radius: 6px;
+                          color: {TEXT_MUTED}; padding: 8px 16px; font-size: 11px; }}
+            QPushButton:hover {{ border-color: {ACCENT_RED}; color: {ACCENT_RED}; }}
+            QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+        """)
+        self._delete_btn.clicked.connect(self._delete_current_build)
+
         self._reset_btn = QPushButton("Reset Build")
         self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._reset_btn.setToolTip("Discard unsaved changes and reload this build as last saved")
@@ -2618,6 +3172,9 @@ class BuildPlannerWidget(QWidget):
 
         save_bar_layout.addWidget(self._dirty_lbl)
         save_bar_layout.addStretch()
+        save_bar_layout.addWidget(self._start_run_btn)
+        save_bar_layout.addWidget(self._history_btn)
+        save_bar_layout.addWidget(self._delete_btn)
         save_bar_layout.addWidget(self._reset_btn)
         save_bar_layout.addWidget(self._save_btn)
         self._save_bar = save_bar
@@ -2666,6 +3223,15 @@ class BuildPlannerWidget(QWidget):
         super().showEvent(event)
         self.refresh_list()
 
+    def _on_game_selector_activated(self, _index):
+        self._game_selector.hidePopup()
+        self.refresh_list()
+
+    def _on_game_selector_pressed(self, index):
+        self._game_selector.setCurrentIndex(index.row())
+        self._game_selector.hidePopup()
+        self.refresh_list()
+
     def _on_refresh_clicked(self):
         """
         Visible feedback for the Refresh button -- refresh_list() itself
@@ -2693,9 +3259,54 @@ class BuildPlannerWidget(QWidget):
         """
         build = self._char_col._build
         if not build or not build.get("id"):
+            if build:
+                self._reset_new_build_draft(build)
             return
         build_key = build.get("share_token") if not build.get("_is_local") else build.get("id")
         self._load_build(build_key or build["id"], is_local=build.get("_is_local"))
+
+    def _reset_new_build_draft(self, build):
+        game = build.get("_game", "elden_ring")
+        refdata = self._refdata.get(game, {})
+        classes = refdata.get("classes", [])
+        class_obj = next((c for c in classes if _same_class_id(c.get("id"), build.get("class_id"))), None)
+        if not class_obj and classes:
+            class_obj = classes[0]
+        if not class_obj:
+            return
+        stats = {s: class_obj.get(s, 10) for s in STAT_NAMES}
+        weapons = {slot: None for slot in WEAPON_SLOTS}
+        for slot in WEAPON_SLOTS:
+            weapons[f"{slot}_aow"] = None
+            weapons[f"{slot}_affinity"] = None
+        reset_detail = {
+            "id": None,
+            "name": "New Build",
+            "description": "",
+            "author": "",
+            "class_id": class_obj.get("id"),
+            "level": class_obj.get("level", 1),
+            "tag": build.get("tag", "pve"),
+            "is_public": False,
+            "stats": stats,
+            "weapons": weapons,
+            "armor": {slot: None for slot in ARMOR_SLOTS},
+            "talismans": [None, None, None, None],
+            "spirit_ash_name": None,
+            "spirit_ash_upgrade": 0,
+            "tear_1_name": None,
+            "tear_2_name": None,
+            "scadutree_level": 0,
+            "_game": game,
+            "_is_local": build.get("_is_local", False),
+        }
+        if game == "err":
+            reset_detail["curio_selections"] = {}
+            reset_detail["fortune_name"] = None
+            reset_detail["minor_fortune_name"] = None
+            reset_detail["rune_inventory"] = []
+        self._render_build(reset_detail)
+        self._mark_dirty()
 
     def refresh_list(self):
         game = self._game_selector.currentData()
@@ -3051,16 +3662,40 @@ class BuildPlannerWidget(QWidget):
         self._empty_lbl.setVisible(False)
         self._viewer_scroll.setVisible(True)
         self._save_bar.setVisible(True)
+        self._refresh_build_action_states(detail)
         self._is_dirty = False
         self._save_btn.setEnabled(False)
         self._dirty_lbl.setText("")
+
+    def _refresh_build_action_states(self, build=None):
+        build = build or self._char_col._build or {}
+        is_cloud_saved = bool(build.get("id") and not build.get("_is_local"))
+        has_build = bool(build)
+        self._start_run_btn.setEnabled(has_build and bool(self._api))
+        self._history_btn.setEnabled(is_cloud_saved and bool(self._api))
+        self._delete_btn.setEnabled(has_build)
 
     def _mark_dirty(self):
         self._is_dirty = True
         self._save_btn.setEnabled(True)
         self._dirty_lbl.setText("Unsaved changes")
+        self._refresh_build_action_states()
 
     def _on_class_changed(self, class_id):
+        self._mark_dirty()
+
+    def _on_visibility_changed(self, is_public):
+        build = self._char_col._build
+        if not build or build.get("_is_local"):
+            return
+        build["is_public"] = bool(is_public)
+        self._mark_dirty()
+
+    def _on_metadata_changed(self, metadata):
+        build = self._char_col._build
+        if not build:
+            return
+        build.update(metadata)
         self._mark_dirty()
 
     def _on_weapon_changed(self):
@@ -3149,6 +3784,168 @@ class BuildPlannerWidget(QWidget):
         else:
             self._summary_col.load(build, refdata, self._api, self._ar_variant_cache)
 
+    def _items_from_current_build(self):
+        items = []
+        for _slot, (weapon, _aow_name, _affinity) in self._equip_col.current_weapons().items():
+            if weapon and weapon.get("name"):
+                items.append({"name": weapon.get("name"), "type": "weapon", "id": weapon.get("id")})
+        equipment = self._equip_col.current_equipment()
+        for armor in (equipment.get("armor") or {}).values():
+            if armor and armor.get("name"):
+                items.append({"name": armor.get("name"), "type": "armor", "id": armor.get("id")})
+        for talisman in equipment.get("talismans") or []:
+            if talisman and talisman.get("name"):
+                items.append({"name": talisman.get("name"), "type": "talisman", "id": talisman.get("id")})
+        for key, item_type in (
+            ("spirit_ash_name", "spirit_ash"),
+            ("tear_1_name", "crystal_tear"),
+            ("tear_2_name", "crystal_tear"),
+        ):
+            name = equipment.get(key)
+            if name:
+                items.append({"name": name, "type": item_type})
+        return items
+
+    def _start_run_from_build(self):
+        build = self._char_col._build
+        if not build:
+            return
+        if not self._api:
+            self._dirty_lbl.setText("Login with QuestLog to start a synced run")
+            return
+        game = build.get("_game", "elden_ring")
+        game_mode = "reforged" if game == "err" else "vanilla"
+        run_game = "elden_ring"
+        build_name = build.get("name") or "New Build"
+        items = self._items_from_current_build()
+        self._start_run_btn.setEnabled(False)
+        self._dirty_lbl.setText("Creating run from build...")
+        import threading
+        def _do_start():
+            result = self._api.create_session(run_game, game_mode, build_name=build_name, items=items)
+            if result:
+                result.setdefault("game", run_game)
+                result.setdefault("game_mode", game_mode)
+                result.setdefault("build_name", build_name)
+                result.setdefault("name", build_name)
+            self._run_created.emit(result or {})
+        threading.Thread(target=_do_start, daemon=True).start()
+
+    def _on_run_created_from_build(self, result):
+        self._start_run_btn.setEnabled(True)
+        if result.get("token"):
+            self._dirty_lbl.setText("Run created from build")
+            self.start_run_requested.emit(result)
+        else:
+            self._dirty_lbl.setText(str(result.get("error") or "Could not start run")[:120])
+
+    def _open_build_history(self):
+        build = self._char_col._build
+        if not build or build.get("_is_local") or not build.get("id"):
+            return
+        if not self._api:
+            self._dirty_lbl.setText("Login with QuestLog to view history")
+            return
+        self._history_btn.setEnabled(False)
+        self._dirty_lbl.setText("Loading history...")
+        build_id = build.get("id") or build.get("share_token")
+        game = build.get("_game", "elden_ring")
+        import threading
+        def _fetch_history():
+            payload = self._api.get_build_history(build_id, game=game)
+            payload["_build_id"] = build_id
+            payload["_game"] = game
+            self._history_fetched.emit(payload or {})
+        threading.Thread(target=_fetch_history, daemon=True).start()
+
+    def _on_history_fetched(self, payload):
+        self._refresh_build_action_states()
+        if payload.get("error"):
+            self._dirty_lbl.setText(str(payload.get("error"))[:120])
+            return
+        self._dirty_lbl.setText("")
+        dialog = BuildHistoryDialog(payload, parent=self)
+        dialog.restore_requested.connect(
+            lambda version, build_id=payload.get("_build_id"), game=payload.get("_game", "elden_ring"):
+                self._restore_build_history(build_id, version, game)
+        )
+        dialog.exec()
+
+    def _restore_build_history(self, build_id, version, game):
+        if not self._api or not build_id:
+            return
+        self._dirty_lbl.setText(f"Restoring version {version}...")
+        self._history_btn.setEnabled(False)
+        import threading
+        def _restore():
+            result = self._api.restore_build_history(build_id, version, game=game)
+            result["_build_id"] = build_id
+            result["_game"] = game
+            self._history_restored.emit(result or {})
+        threading.Thread(target=_restore, daemon=True).start()
+
+    def _on_history_restored(self, result):
+        self._refresh_build_action_states()
+        if result.get("ok") or result.get("build_id") or result.get("id"):
+            self._dirty_lbl.setText("History version restored")
+            reload_key = result.get("share_token") or result.get("build_id") or result.get("id") or result.get("_build_id")
+            if reload_key:
+                self._load_build(reload_key, is_local=False)
+            self.refresh_list()
+        else:
+            self._dirty_lbl.setText(str(result.get("error") or result.get("detail") or "Restore failed")[:120])
+
+    def _delete_current_build(self):
+        build = self._char_col._build
+        if not build:
+            return
+        name = build.get("name") or "this build"
+        if QMessageBox.question(
+            self,
+            "Delete Build",
+            f"Delete '{name}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        game = build.get("_game", "elden_ring")
+        if not build.get("id"):
+            self._char_col._build = None
+            self._empty_lbl.setText("Select a build to view it.")
+            self._empty_lbl.setVisible(True)
+            self._viewer_scroll.setVisible(False)
+            self._save_bar.setVisible(False)
+            self.refresh_list()
+            return
+        if build.get("_is_local"):
+            ok = local_builds_store.delete_local_build(build.get("id"), game)
+            self._on_delete_result({"ok": ok})
+            return
+        if not self._api:
+            self._dirty_lbl.setText("Login with QuestLog to delete cloud builds")
+            return
+        delete_key = build.get("id") or build.get("share_token")
+        self._delete_btn.setEnabled(False)
+        self._dirty_lbl.setText("Deleting...")
+        import threading
+        def _do_delete():
+            result = self._api.delete_build(delete_key, game=game)
+            self._delete_result.emit(result or {})
+        threading.Thread(target=_do_delete, daemon=True).start()
+
+    def _on_delete_result(self, result):
+        self._delete_btn.setEnabled(True)
+        if result.get("ok") or result == {}:
+            self._char_col._build = None
+            self._empty_lbl.setText("Select a build to view it.")
+            self._empty_lbl.setVisible(True)
+            self._viewer_scroll.setVisible(False)
+            self._save_bar.setVisible(False)
+            self.refresh_list()
+        else:
+            self._dirty_lbl.setText(str(result.get("error") or result.get("detail") or "Delete failed")[:120])
+
     def _save_current_build(self):
         if not self._char_col._build:
             return
@@ -3182,6 +3979,7 @@ class BuildPlannerWidget(QWidget):
             "is_public": build.get("is_public", False),
             **stats,
         }
+        build["is_public"] = payload["is_public"]
         for slot, (weapon, aow_name, affinity) in self._equip_col.current_weapons().items():
             payload[f"{slot}_weapon_id"] = weapon.get("id") if weapon else None
             payload[f"{slot}_aow_name"] = aow_name

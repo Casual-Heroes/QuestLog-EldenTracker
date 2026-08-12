@@ -1009,7 +1009,7 @@ class App:
         _save_settings(s)
 
         self._api = QuestLogClient(api_key, s.get("session_token", ""))
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
         self._selector_win._widget.set_server_runs(active_runs, run_history)
 
@@ -1062,7 +1062,7 @@ class App:
                 token = runs[0]["token"]
 
         self._api = QuestLogClient(api_key, token)
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         if self._tracker:
             self._tracker._api = self._api
             self._tracker.build_planner_tab.set_api(self._api)
@@ -1137,7 +1137,7 @@ class App:
 
         if api_key and token:
             self._api = QuestLogClient(api_key, token)
-            self._selector_win._widget.build_planner_tab.set_api(self._api)
+            self._selector_win._widget.set_api(self._api)
             # Persist token so next launch auto-reconnects
             from gui.boss_tracker import _load_settings, _save_settings
             s = _load_settings()
@@ -1159,7 +1159,7 @@ class App:
             return
         log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
         # Fetch runs immediately in background — no manual refresh needed
         self._refresh_server_runs(api_key)

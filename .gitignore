@@ -67,6 +67,8 @@ release_build/
 # easyocr model cache (downloaded on first run)
 .EasyOCR/
 .tmp_soulstruct_home/
+.research_tools/
+research/nrftw/output/
 
 # Backups and archives
 *.zip

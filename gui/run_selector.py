@@ -43,6 +43,20 @@ TEXT_PRIMARY = "#f1f0f5"
 TEXT_MUTED   = "#6b7280"
 TEXT_DIM     = "#374151"
 
+
+def _commit_combo_on_press(combo, callback=None):
+    """Make popup item clicks commit immediately on Windows."""
+    combo.setEditable(False)
+
+    def _pressed(index):
+        combo.setCurrentIndex(index.row())
+        combo.hidePopup()
+        if callback:
+            callback(index.row())
+
+    combo.view().pressed.connect(_pressed)
+
+
 QSS = f"""
 * {{ font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 13px; }}
 QWidget {{ background: {BG_BASE}; color: {TEXT_PRIMARY}; }}
@@ -161,9 +175,14 @@ class RunCard(QWidget):
 
 class NewRunPanel(QWidget):
     run_created = pyqtSignal(str)   # slug
+    server_run_created = pyqtSignal(dict)
+    _builds_fetched = pyqtSignal(str, list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._api = None
+        self._build_cache = {}
+        self._builds_fetched.connect(self._on_builds_fetched)
         self.setStyleSheet(f"background: {BG_CARD}; border: 1px solid {BORDER_SOLID}; border-radius: 8px;")
 
         layout = QVBoxLayout(self)
@@ -179,6 +198,12 @@ class NewRunPanel(QWidget):
         self.name_input.setPlaceholderText("Run name  (e.g. Vanilla First Clear, Reforged NG+)")
         layout.addWidget(self.name_input)
 
+        run_type_lbl = QLabel("RUN TYPE")
+        run_type_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        run_type_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px; background: transparent; border: none;")
+        run_type_lbl.setToolTip("This is the run's game/mode. Choosing a live save below can update this automatically.")
+        layout.addWidget(run_type_lbl)
+
         row = QHBoxLayout()
         row.setSpacing(12)
 
@@ -187,25 +212,40 @@ class NewRunPanel(QWidget):
         for g in self._games:
             self.game_combo.addItem(g["name"], g["id"])
         self.game_combo.currentIndexChanged.connect(self._on_game_changed)
+        _commit_combo_on_press(self.game_combo)
 
         self.mode_combo = QComboBox()
         self._populate_modes()
-        self.mode_combo.currentIndexChanged.connect(lambda: self._populate_save_slots(prefer_current=False))
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        _commit_combo_on_press(self.mode_combo)
 
         row.addWidget(self.game_combo, 1)
         row.addWidget(self.mode_combo, 1)
         layout.addLayout(row)
 
-        save_lbl = QLabel("LOAD SAVE TO TRACK")
+        build_lbl = QLabel("BUILD TO TRACK")
+        build_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        build_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px; background: transparent; border: none;")
+        build_lbl.setToolTip("Optional. Choose a build so QuestLog seeds the run checklist from its equipment.")
+        layout.addWidget(build_lbl)
+
+        self.build_combo = QComboBox()
+        self.build_combo.setToolTip("Optional. Seeds the run checklist; it does not choose the save file.")
+        _commit_combo_on_press(self.build_combo, self._on_build_selected)
+        self.build_combo.activated.connect(self._on_build_selected)
+        layout.addWidget(self.build_combo)
+
+        save_lbl = QLabel("LIVE SAVE SCAN")
         save_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         save_lbl.setStyleSheet(f"color: {TEXT_MUTED}; letter-spacing: 2px; background: transparent; border: none;")
-        save_lbl.setToolTip("Choose the character slot EldenTracker scans for this run.")
+        save_lbl.setToolTip("Choose the exact character save EldenTracker scans for automatic item collection.")
         layout.addWidget(save_lbl)
 
         save_row = QHBoxLayout()
         save_row.setSpacing(12)
         self.save_combo = QComboBox()
-        self.save_combo.setToolTip("Character slot EldenTracker will scan for automatic item tracking.")
+        self.save_combo.setToolTip("Pick the exact character slot EldenTracker should scan before starting or connecting a run.")
+        _commit_combo_on_press(self.save_combo, self._on_save_selected)
         refresh_save_btn = QPushButton("Reload Saves")
         refresh_save_btn.setToolTip("Reload Elden Ring character slots from your save files.")
         refresh_save_btn.setFixedHeight(34)
@@ -213,6 +253,12 @@ class NewRunPanel(QWidget):
         save_row.addWidget(self.save_combo, 1)
         save_row.addWidget(refresh_save_btn)
         layout.addLayout(save_row)
+        save_help = QLabel(
+            "Auto-collection scans this exact character save. Pick the character you are about to play before creating or connecting a run, or items from the wrong inventory can be marked collected."
+        )
+        save_help.setWordWrap(True)
+        save_help.setStyleSheet(f"color: {ACCENT_GOLD}; font-size: 10px; background: transparent; border: none;")
+        layout.addWidget(save_help)
         self._select_saved_save_mode()
         self._populate_save_slots(prefer_current=False)
 
@@ -246,9 +292,18 @@ class NewRunPanel(QWidget):
         create_btn.setFixedHeight(38)
         create_btn.clicked.connect(self._create)
         layout.addWidget(create_btn)
+        self._populate_builds()
+
+    def set_api(self, api):
+        self._api = api
+        self._populate_builds()
 
     def _on_game_changed(self):
         self._populate_modes()
+        self._populate_builds()
+
+    def _on_mode_changed(self):
+        self._populate_builds()
 
     def _on_local_changed(self, state):
         if state:
@@ -265,12 +320,109 @@ class NewRunPanel(QWidget):
             return
         for m in self._games[idx]["modes"]:
             self.mode_combo.addItem(m["name"], m["id"])
-        self._populate_save_slots(prefer_current=False)
+        if hasattr(self, "save_combo"):
+            self._populate_save_slots(prefer_current=True)
+
+    def _build_api_game(self):
+        mode_id = self.mode_combo.currentData()
+        return "err" if mode_id == "reforged" else "elden_ring"
+
+    def _populate_builds(self):
+        if not hasattr(self, "build_combo"):
+            return
+        game_id = self.game_combo.currentData()
+        mode_id = self.mode_combo.currentData()
+        self.build_combo.clear()
+        self.build_combo.addItem("No build - blank run", None)
+        if game_id != "elden_ring" or mode_id not in ("vanilla", "reforged"):
+            self.build_combo.setEnabled(False)
+            return
+        self.build_combo.setEnabled(True)
+
+        api_game = self._build_api_game()
+        local_rows = []
+        try:
+            from core import local_builds as local_builds_store
+            for build in local_builds_store.list_local_builds(api_game):
+                build = dict(build)
+                build["_is_local"] = True
+                build["_api_game"] = api_game
+                local_rows.append(build)
+        except Exception:
+            local_rows = []
+        self._on_builds_fetched(api_game, local_rows)
+
+        if not self._api:
+            return
+        import threading
+        def _fetch_cloud_builds():
+            cloud_rows = self._api.get_builds(game=api_game) or []
+            for build in cloud_rows:
+                build["_is_local"] = False
+                build["_api_game"] = api_game
+            self._builds_fetched.emit(api_game, local_rows + cloud_rows)
+        threading.Thread(target=_fetch_cloud_builds, daemon=True).start()
+
+    def _on_builds_fetched(self, api_game, builds):
+        if api_game != self._build_api_game() or not hasattr(self, "build_combo"):
+            return
+        current = self.build_combo.currentData()
+        current_key = (current or {}).get("share_token") or (current or {}).get("id")
+        self._build_cache[api_game] = builds or []
+        self.build_combo.blockSignals(True)
+        self.build_combo.clear()
+        self.build_combo.addItem("No build - blank run", None)
+        selected_index = 0
+        for build in builds or []:
+            label = build.get("name", "Untitled Build")
+            level = build.get("level") or build.get("total_level")
+            source = "Local" if build.get("_is_local") else "QuestLog"
+            if level:
+                label = f"{label}  -  Lv {level}  -  {source}"
+            else:
+                label = f"{label}  -  {source}"
+            row_index = self.build_combo.count()
+            self.build_combo.addItem(label, build)
+            build_key = build.get("share_token") or build.get("id")
+            if current_key and build_key == current_key:
+                selected_index = row_index
+        self.build_combo.setCurrentIndex(selected_index)
+        self.build_combo.blockSignals(False)
+
+    def _on_build_selected(self, _index):
+        build = self.build_combo.currentData() if hasattr(self, "build_combo") else None
+        if build and not self.name_input.text().strip():
+            self.name_input.setText(build.get("name", "Untitled Build"))
+        if build:
+            target_mode = "reforged" if build.get("_api_game") == "err" else "vanilla"
+            mode_index = self.mode_combo.findData(target_mode)
+            if mode_index >= 0 and self.mode_combo.currentIndex() != mode_index:
+                self.mode_combo.setCurrentIndex(mode_index)
+
+    def _on_save_selected(self, _index=None):
+        save_choice = self.save_combo.currentData() if hasattr(self, "save_combo") else None
+        if not save_choice:
+            return
+        save_mode = save_choice.get("mode")
+        if save_mode in ("vanilla", "reforged"):
+            mode_index = self.mode_combo.findData(save_mode)
+            if mode_index >= 0 and self.mode_combo.currentIndex() != mode_index:
+                self.mode_combo.setCurrentIndex(mode_index)
+        from gui.boss_tracker import _load_settings, _save_settings
+        settings = _load_settings()
+        settings["save_file_path"] = save_choice["path"]
+        settings["save_slot"] = save_choice["slot"]
+        settings["save_character_name"] = save_choice["name"]
+        _save_settings(settings)
 
     def _same_save_choice(self, left, right) -> bool:
         if not left or not right:
             return False
-        return left.get("path") == right.get("path") and left.get("slot") == right.get("slot")
+        return (
+            left.get("path") == right.get("path")
+            and left.get("slot") == right.get("slot")
+            and (not left.get("mode") or not right.get("mode") or left.get("mode") == right.get("mode"))
+        )
 
     def _populate_save_slots(self, prefer_current=False):
         if not hasattr(self, "save_combo"):
@@ -278,8 +430,7 @@ class NewRunPanel(QWidget):
         previous_choice = self.save_combo.currentData() if prefer_current else None
         self.save_combo.clear()
         game_id = self.game_combo.currentData()
-        mode_id = self.mode_combo.currentData()
-        if game_id != "elden_ring" or mode_id not in ("vanilla", "reforged"):
+        if game_id != "elden_ring":
             self.save_combo.addItem("Manual item tracking only", None)
             self.save_combo.setEnabled(False)
             return
@@ -296,11 +447,12 @@ class NewRunPanel(QWidget):
             except (TypeError, ValueError):
                 current_slot = None
             selected_index = -1
-            candidates = [c for c in find_save_files() if c["mode"] == mode_id]
+            candidates = [c for c in find_save_files() if c["mode"] in ("vanilla", "reforged")]
             if not candidates:
                 self.save_combo.addItem("No Elden Ring save found - configure in Settings", None)
                 return
             for c in candidates:
+                mode_id = c["mode"]
                 watcher = SaveWatcher(c["path"], mode=mode_id)
                 slots = watcher.list_slots()
                 for slot in slots:
@@ -310,6 +462,7 @@ class NewRunPanel(QWidget):
                         "path": c["path"],
                         "slot": slot["index"],
                         "name": slot["name"],
+                        "mode": mode_id,
                     })
                     choice = self.save_combo.itemData(row_index)
                     if selected_index < 0 and self._same_save_choice(previous_choice, choice):
@@ -345,7 +498,8 @@ class NewRunPanel(QWidget):
             self.mode_combo.setCurrentIndex(idx)
 
     def _create(self):
-        name    = self.name_input.text().strip()
+        selected_build = self.build_combo.currentData() if hasattr(self, "build_combo") else None
+        name    = self.name_input.text().strip() or ((selected_build or {}).get("name") if selected_build else "")
         game_id = self.game_combo.currentData()
         mode_id = self.mode_combo.currentData()
         if not name or not game_id or not mode_id:
@@ -353,12 +507,10 @@ class NewRunPanel(QWidget):
         local_only = self.local_check.isChecked()
         save_choice = self.save_combo.currentData() if hasattr(self, "save_combo") else None
         if save_choice:
-            from gui.boss_tracker import _load_settings, _save_settings
-            settings = _load_settings()
-            settings["save_file_path"] = save_choice["path"]
-            settings["save_slot"] = save_choice["slot"]
-            settings["save_character_name"] = save_choice["name"]
-            _save_settings(settings)
+            self._on_save_selected()
+        if not local_only and self._api:
+            self._create_questlog_run_from_build(selected_build, name, game_id, mode_id)
+            return
         slug = create_run(name, game_id, mode_id,
                           questlog_token="__local__" if local_only else None,
                           save_file_path=save_choice.get("path") if save_choice else None,
@@ -367,6 +519,59 @@ class NewRunPanel(QWidget):
         self.local_check.setChecked(False)
         self.name_input.clear()
         self.run_created.emit(slug)
+
+    @staticmethod
+    def _items_from_build_detail(detail):
+        items = []
+        for slot in ("rh1", "rh2", "rh3", "lh1", "lh2", "lh3"):
+            weapon = (detail.get("weapons") or {}).get(slot)
+            if weapon and weapon.get("name"):
+                items.append({"name": weapon.get("name"), "type": "weapon", "id": weapon.get("id")})
+        for armor in (detail.get("armor") or {}).values():
+            if armor and armor.get("name"):
+                items.append({"name": armor.get("name"), "type": "armor", "id": armor.get("id")})
+        for talisman in detail.get("talismans") or []:
+            if talisman and talisman.get("name"):
+                items.append({"name": talisman.get("name"), "type": "talisman", "id": talisman.get("id")})
+        for key, item_type in (
+            ("spirit_ash_name", "spirit_ash"),
+            ("tear_1_name", "crystal_tear"),
+            ("tear_2_name", "crystal_tear"),
+        ):
+            name = detail.get(key)
+            if name:
+                items.append({"name": name, "type": item_type})
+        return items
+
+    def _create_questlog_run_from_build(self, build, name, game_id, mode_id):
+        api_game = self._build_api_game()
+        build_key = (build or {}).get("share_token") or (build or {}).get("id")
+        self.setEnabled(False)
+        import threading
+        def _worker():
+            detail = {}
+            if build and build.get("_is_local"):
+                try:
+                    from core import local_builds as local_builds_store
+                    detail = local_builds_store.load_local_build(build.get("id"), api_game) or {}
+                except Exception:
+                    detail = {}
+            elif build:
+                detail = self._api.get_build_detail(build_key, game=api_game) or {}
+            items = self._items_from_build_detail(detail)
+            result = self._api.create_session(
+                game_id,
+                mode_id,
+                build_name=name,
+                items=items,
+            )
+            if result:
+                result.setdefault("game", game_id)
+                result.setdefault("game_mode", mode_id)
+                result.setdefault("build_name", name)
+                result.setdefault("name", name)
+            self.server_run_created.emit(result or {})
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 class ServerRunCard(QWidget):
@@ -479,6 +684,7 @@ class RunSelectorWidget(QWidget):
         self.setPalette(pal)
         self._server_active  = []  # active runs from last profile fetch
         self._server_history = []  # run history from last profile fetch
+        self._deleted_server_tokens = set()
         self._update_url = UPDATE_URL
 
         root = QVBoxLayout(self)
@@ -644,6 +850,7 @@ class RunSelectorWidget(QWidget):
 
         self.new_panel = NewRunPanel()
         self.new_panel.run_created.connect(self._on_run_created)
+        self.new_panel.server_run_created.connect(self._on_server_run_created_from_panel)
         right.addWidget(self.new_panel)
         right.addStretch()
 
@@ -664,6 +871,7 @@ class RunSelectorWidget(QWidget):
         """)
         self.tabs.addTab(body, "RUNS")
         self.build_planner_tab = BuildPlannerWidget()
+        self.build_planner_tab.start_run_requested.connect(self.server_run_connect.emit)
         self.tabs.addTab(self.build_planner_tab, "BUILDS")
         root.addWidget(self.tabs, 1)
 
@@ -752,7 +960,10 @@ class RunSelectorWidget(QWidget):
         # Server active runs first — skip if already represented locally
         i = 0
         for run in self._server_active:
-            if run.get("token") in local_tokens:
+            token = run.get("token")
+            if token in self._deleted_server_tokens:
+                continue
+            if token in local_tokens:
                 continue
             if _server_key(run) in local_unlinked_names:
                 continue
@@ -779,7 +990,21 @@ class RunSelectorWidget(QWidget):
         self._populate_runs()
         self.run_selected.emit(slug)
 
+    def _on_server_run_created_from_panel(self, server_run):
+        self.new_panel.setEnabled(True)
+        if server_run.get("token"):
+            self.new_panel.local_check.setChecked(False)
+            self.new_panel.name_input.clear()
+            self.server_run_connect.emit(server_run)
+            return
+        QMessageBox.warning(
+            self,
+            "Create Run Failed",
+            str(server_run.get("error") or "QuestLog could not create this run."),
+        )
+
     def _on_delete(self, slug):
+        meta = {}
         try:
             meta = load_run_meta(slug)
             run_name = meta.get("name", slug)
@@ -798,16 +1023,41 @@ class RunSelectorWidget(QWidget):
 
         # Signal main.py to stop the run if it's currently active — must happen
         # before rmtree so no file handles are open
+        token = meta.get("questlog_token")
+        is_questlog_run = bool(token and token != "__local__")
+        if is_questlog_run:
+            self._deleted_server_tokens.add(token)
+            self._server_active = [run for run in self._server_active if run.get("token") != token]
+            self._server_history = [run for run in self._server_history if run.get("token") != token]
         self.run_deleted.emit(slug)
         delete_run(slug)
         self._populate_runs()
+        if is_questlog_run and self.new_panel._api:
+            import threading
+
+            def _delete_remote():
+                result = self.new_panel._api.delete_session(token)
+                if not result.get("ok"):
+                    self._deleted_server_tokens.discard(token)
+
+            threading.Thread(target=_delete_remote, daemon=True).start()
 
     def set_server_runs(self, active_runs, run_history):
         self._reset_refresh_btn()
-        self._server_active  = active_runs  or []
-        self._server_history = run_history or []
+        self._server_active  = [
+            run for run in (active_runs or [])
+            if run.get("token") not in self._deleted_server_tokens
+        ]
+        self._server_history = [
+            run for run in (run_history or [])
+            if run.get("token") not in self._deleted_server_tokens
+        ]
         self._sync_linked_local_runs_from_server()
         self._populate_runs()
+
+    def set_api(self, api):
+        self.new_panel.set_api(api)
+        self.build_planner_tab.set_api(api)
 
     def _sync_linked_local_runs_from_server(self):
         """Mirror server-side run display metadata onto linked local stubs."""
