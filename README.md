@@ -1,68 +1,160 @@
 # QuestLog EldenTracker
 
-**SoulsLike Boss, Death, and Build Tracker** — track your suffering, plan your build, compete on community leaderboards, and keep every run organised.
+**Elden Ring and Elden Ring Reforged desktop tracker** for runs, deaths, bosses, live save item checks, OBS overlays, and build planning.
 
-Built by [Casual Heroes](https://questlog.casual-heroes.com) for streamers and players who take their deaths seriously.
+EldenTracker is built by [Casual Heroes](https://questlog.casual-heroes.com) for players and streamers who want a focused companion app while they play. It works locally without a QuestLog account, and it can optionally connect to QuestLog for cloud synced runs, builds, profile restore, and web overlays.
 
 ---
 
-## Features
+## What It Does
 
-- **Death tracking** — session and total deaths, deaths per hour, session timer
-- **Boss checklist** — tick off every boss as you go, organised by area
-- **Rage Index** — a tiered fury system that builds as you die and decays as you kill. Go hollow enough times and it shows
-- **OBS overlay** — self-contained HTML browser source, runs a local server automatically, no external dependencies
-- **Multiple runs** — create named runs per playthrough, challenge run, or mod. Everything persists per run
-- **Build Planner** — plan your full build: weapons, armor, talismans, spells, spirit ashes, crystal tears, Ashes of War, and affinity. Live AR (Attack Rating) breakdown per weapon slot
-- **COMPETE tab** — browse active community tournaments, join or leave with one click. Your runs auto-submit to every tournament you've joined when you end a run
-- **QuestLog cloud sync** *(optional)* — connect a free QuestLog account to sync runs and builds across sessions, appear on leaderboards, and access your data from the web
-- **Always on top / opacity** — pin the tracker over your game, dial in the transparency
+- **Run and death tracking** - total deaths, this session, boss deaths, everything else, current boss deaths, deaths per boss, deaths per hour, current streak, longest life, session time, and run duration.
+- **Boss tracking** - focus a current boss, log deaths against it, mark the focused boss defeated, reset boss progress, or keep non-boss deaths separate.
+- **Manual correction tools** - set exact total deaths or exact session deaths when a run needs to be repaired.
+- **Live save tracking** - choose the save slot/character to track, then let the app scan Elden Ring or Elden Ring Reforged saves for supported inventory items.
+- **Item collection checklist** - automatically marks supported weapons, armor, spells, talismans, crystal tears, ashes, key items, and other catalog entries when they exist in the selected save.
+- **Tarnished Fury** - the app's tilt meter, including Maiden's Grace through HOLLOW states and Gone Hollow counts.
+- **OBS/local overlay** - local browser overlay for stream layouts, including death stats, boss progress, item progress, and Fury status.
+- **Build planner** - plan local or QuestLog builds with stats, weapons, armor, talismans, spells, spirit ash, physick, curios, fortunes, binding runes, Ashes of War, affinities, enkindling, runeforging, and attack rating summaries.
+- **Catalog updates** - checks QuestLog's public catalog manifest on launch, downloads changed data, verifies it, and falls back to the bundled snapshot when offline.
+- **Optional QuestLog sync** - cloud sync for runs, deaths, builds, and profile data when you log in.
 
 ---
 
 ## Supported Games
 
-| Game | Modes |
-|------|-------|
-| Elden Ring | Vanilla (base game + Shadow of the Erdtree DLC) |
-| Elden Ring | Elden Ring Reforged + DLC (mod) |
+| Game | Support |
+|------|---------|
+| Elden Ring | Base game and Shadow of the Erdtree |
+| Elden Ring Reforged | ERR and DLC support |
 
-More games coming in future releases.
+More Soulslike games may be added later, but the current app is focused on Elden Ring and Elden Ring Reforged.
 
 ---
 
-## Hotkeys
+## Local First, Cloud Optional
+
+You do **not** need a QuestLog account to use EldenTracker.
+
+Local-only runs, builds, settings, logs, builder cache, and catalog cache are stored in:
+
+```text
+%LOCALAPPDATA%\QuestLog\EldenTracker
+```
+
+Older ZIP builds stored runtime data beside the app in `data\`. On first launch, modern versions copy missing legacy data into `%LOCALAPPDATA%` and leave the old folder untouched as a safety backup.
+
+Logging in with QuestLog adds:
+
+- Cloud run sync
+- Cloud build sync
+- Profile restore across installs
+- Web/OBS overlay status from QuestLog
+- QuestLog leaderboards and web build pages
+
+If the internet is unavailable, the app keeps working with local data and the last verified or bundled catalog snapshot.
+
+---
+
+## Live Save Tracking
+
+When creating a run, choose the game mode and the character/save slot you want EldenTracker to follow. Use **Reload Saves** if the save list changes while the app is open.
+
+Live save tracking reads the selected save and marks supported inventory items found in that save. It can catch items you picked up while the tracker was closed, as long as the item can be identified from the save data.
+
+The app does not modify your game files or save files.
+
+Some entries may still require manual tracking when the save data does not expose a clean unique item signal. Known manual cases include:
+
+- Furled Finger's Trick-Mirror
+- Perfume Bottle in crystal tear form
+
+---
+
+## Default Hotkeys
 
 | Key | Action |
 |-----|--------|
-| F9 | Manual death |
-| F10 | Manual boss kill |
-| F8 (hold 3s) | Reset all deaths and rage |
+| F9 | Add death |
+| F10 | Subtract/undo death |
+| F8 hold 3s | Full reset |
+| F4 | Focus boss |
+| F5 | Unfocus boss |
+| F11 | Mark focused boss defeated |
 
 Hotkeys are configurable in the Settings tab.
 
 ---
 
-## OBS Overlay Setup
+## Death and Boss Controls
 
-1. In OBS, add a **Browser Source**
-2. Set the URL to `http://localhost:8765/index.html` — the tracker starts a local server automatically when it runs
-3. Set width to `300`, height to `420`
-4. The overlay updates every second while the tracker is open — no additional config needed
+The tracker can operate as a local-only counter or as a QuestLog-connected run.
 
-The overlay supports three boss display modes (cycle with the button): recent kills, full list, or count only.
+For connected runs, QuestLog is the source of truth after each sync response. The app replaces local counters with the authoritative breakdown from the server:
+
+- Total deaths
+- This session
+- Boss deaths
+- Everything else
+- Current boss deaths
+- Current streak
+- Tarnished Fury state
+
+For local-only runs, the app stores the same run data locally.
+
+---
+
+## Build Planner
+
+The BUILDS tab supports both local and QuestLog builds.
+
+Build planning includes:
+
+- Class and attributes with current rune level preserved
+- Six weapon slots with upgrades, Ashes of War, affinities, enkindling, and runeforging
+- Armor, talismans, spells, spirit ash, physick tears, curios, fortunes, and binding runes
+- Attack Rating summaries for equipped weapons
+- ERR-specific data and calculations where available
+- Cached catalog data from QuestLog with bundled offline fallback
+
+Elden Ring Reforged support includes ERR-only build systems such as enkindling, runeforging, fortunes, binding runes, and ERR affinity data. Downloaded catalog JSON is data only; executable calculation or UI changes still require an app update.
+
+---
+
+## OBS Overlay
+
+1. Open EldenTracker.
+2. In OBS, add a **Browser Source**.
+3. Set the URL to:
+
+```text
+http://localhost:8765/index.html
+```
+
+The tracker starts the local overlay server automatically while the app is running. Size and crop the browser source to fit the overlay layout you want to show.
 
 ---
 
 ## Installation
 
-### Option A — Executable (Windows, recommended)
+### Windows ZIP
 
-Download the latest release from the [Releases page](https://github.com/Casual-Heroes/QuestLog-EldenTracker/releases), extract the zip anywhere, and run `QuestLog.exe`. No Python or dependencies required.
+Download the latest release from:
 
-### Option B — From source
+- [QuestLog EldenTracker releases](https://github.com/Casual-Heroes/QuestLog-EldenTracker/releases)
+- [QuestLog](https://questlog.casual-heroes.com)
 
-Requires Python 3.11+
+Extract the ZIP and run:
+
+```text
+EldenTracker.exe
+```
+
+No Python install is required for the packaged build.
+
+### From Source
+
+Python 3.12 is recommended.
 
 ```bash
 pip install -r requirements.txt
@@ -71,80 +163,42 @@ python main.py
 
 ---
 
-## QuestLog Cloud Sync (optional)
+## Data and Catalogs
 
-Log in with a free [QuestLog account](https://questlog.casual-heroes.com) to unlock:
+The app ships with a bundled catalog snapshot so it can work offline after install.
 
-- **Run sync** — deaths, boss kills, and session stats backed up to the cloud
-- **Build sync** — your builds saved to your account, accessible from any device
-- **Leaderboards** — appear on community leaderboards at [questlog.casual-heroes.com/soulslike/leaderboards](https://questlog.casual-heroes.com/soulslike/leaderboards/)
-- **Tournaments** — join and leave active community tournaments from the COMPETE tab. When you end a run, it auto-submits to every tournament you've joined
+On launch, EldenTracker checks QuestLog's public catalog manifest. If the revision changed, it downloads the updated datasets, verifies byte length and SHA-256, installs them atomically, and uses them for future sessions.
 
-Cloud sync is entirely optional — the tracker works fully offline without an account.
-
----
-
-## How Runs Work
-
-Each run is a named profile stored under `data/runs/`. You can have as many as you want — one per playthrough, challenge run, or mod. Boss progress, deaths, and session stats are all saved per run and survive restarts.
-
-If you're logged in to QuestLog, runs created here can be connected to a server-side run for cloud sync and leaderboard submission.
-
----
-
-## Build Planner
-
-The BUILDS tab lets you plan a complete character build before or during a run:
-
-- **Armament** — six weapon slots (RH1/2/3, LH1/2/3) with Ash of War and affinity selection per slot. Live AR panel shows Attack Rating breakdown by damage type
-- **Armor** — helm, chest, gauntlets, legs
-- **Talismans** — all four talisman slots
-- **Spells** — sorceries and incantations
-- **Spirit Ash** — with upgrade level
-- **Flask** — crystal tear loadout
-
-Supports both Vanilla Elden Ring and Elden Ring Reforged with separate item databases.
-
-Use **START RUN** in the build planner to launch a new tracked run with your build attached.
-
----
-
-## Rage Index
-
-The Rage Index (called **Tarnished Fury** in Elden Ring) tracks how tilted you are:
-
-| State | Threshold |
-|-------|-----------|
-| Maiden's Grace | 0% |
-| Staggered | 25% |
-| Frenzied | 50% |
-| Cursed | 75% |
-| HOLLOW | 100% |
-
-Rage builds with each death and decays over time or when you kill bosses. Higher-tier kills decay more rage. Going hollow enough times stacks a hollow streak that takes serious boss kills to clear.
+Catalog data covers the app's item, boss, build planner, and regulation-backed calculations where supported. If the public catalog cannot be reached, the app uses the previous verified cache or the bundled snapshot.
 
 ---
 
 ## Project Structure
 
+```text
+main.py                    App entry point
+core/                      Sync, paths, save parsing, catalog sync, calculations
+games/                     Game definitions and boss data
+gui/                       PyQt6 UI for runs, tracker, settings, and builds
+overlay/                   Local OBS/browser overlay
+assets/                    Logos and icons
+resources/catalog/         Bundled offline catalog snapshot
+ERR-Debug-Tool-Resources/  ERR reference resources used for supported live data
+tools/                     Export, package, validation, and data tooling
 ```
-main.py               — app entry point
-core/                 — death tracking, run management, cloud sync, AR calculator
-games/                — game definitions (meta.json + boss lists per mode)
-gui/                  — PyQt6 UI (run selector, boss tracker, build planner, tournaments)
-overlay/              — OBS HTML browser source
-assets/               — logos and icons
-data/                 — runtime data, not committed (runs, logs, settings, builds)
-```
+
+Runtime user data lives in `%LOCALAPPDATA%\QuestLog\EldenTracker`, not in the release ZIP.
 
 ---
 
-## License
+## Notices
 
-GNU General Public License v3.0 — free to use and modify, but any derivative work must also be open source under the same license.
+EldenTracker is a community tool. It is not affiliated with FromSoftware, Bandai Namco, Elden Ring Reforged, or any game publisher or mod team.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for credits, compatibility notes, and third-party resource attribution for Elden Ring, Elden Ring Reforged, ERR Debug Tool Resources, Elden Ring Debug Tool, and bundled offline catalog data.
 
 ---
 
-*QuestLog EldenTracker is a [Casual Heroes](https://questlog.casual-heroes.com) project. Not affiliated with FromSoftware or any game publisher.*
+## License
+
+GNU General Public License v3.0. You are free to use, study, modify, and redistribute the project under the terms of the GPL.

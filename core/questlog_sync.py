@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.1.2d"
+APP_VERSION = "1.1.2e"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -597,8 +597,13 @@ class QuestLogSync:
                     json={"item_name": item_name, "method": "app"},
                     headers=self._headers(), timeout=5,
                 )
-                if r.ok and on_done:
-                    on_done(r.json())
+                if not r.ok:
+                    log.warning("collect_item %r rejected: status=%s body=%r", item_name, r.status_code, r.text[:500])
+                    return
+                data = r.json()
+                self._apply_item_payload(data)
+                if on_done:
+                    on_done(data)
             except Exception as e:
                 log.warning("collect_item failed: %s", e)
         threading.Thread(target=_do, daemon=True).start()
@@ -611,11 +616,37 @@ class QuestLogSync:
                     json={"item_name": item_name},
                     headers=self._headers(), timeout=5,
                 )
-                if r.ok and on_done:
-                    on_done(r.json())
+                if not r.ok:
+                    log.warning("uncollect_item %r rejected: status=%s body=%r", item_name, r.status_code, r.text[:500])
+                    return
+                data = r.json()
+                self._apply_item_payload(data)
+                if on_done:
+                    on_done(data)
             except Exception as e:
                 log.warning("uncollect_item failed: %s", e)
         threading.Thread(target=_do, daemon=True).start()
+
+    def _apply_item_payload(self, data):
+        if not isinstance(data, dict):
+            return
+        items = data.get("items")
+        if not isinstance(items, list):
+            status = data.get("status")
+            items = status.get("items") if isinstance(status, dict) else None
+        if not isinstance(items, list):
+            return
+
+        collected = data.get("collected")
+        total = data.get("total")
+        if collected is None:
+            collected = sum(1 for it in items if isinstance(it, dict) and it.get("collected"))
+        if total is None:
+            total = len(items)
+        with self._lock:
+            self._cached_items = items
+            self._items_collected = int(collected or 0)
+            self._items_total = int(total or 0)
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 

@@ -2,6 +2,7 @@ import sys
 import os
 import threading
 import http.server
+import time
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts.warning=false"
 
 if sys.platform == "win32":
@@ -208,7 +209,7 @@ class App:
         self._save_watcher_slot = 0  # character slot index to poll
         self._save_named_prev  = None  # previous poll's owned-item name set (for diffing)
         self._save_qty_prev    = None  # previous poll's stackable-item quantity dict (for diffing)
-        self._save_auto_collect_submitted = set()  # item keys already submitted from save reconciliation this run
+        self._save_auto_collect_submitted = {}  # item key -> last auto-collect submit time
         self._reward_bosses_synced = set()  # boss keys already server-marked from save-owned rewards
         self._active_game_id = None  # game_id of the currently active run, for SaveWatcher setup
         self._active_mode_id = None  # normalized mode_id ("vanilla"/"reforged") of the active run
@@ -378,7 +379,7 @@ class App:
         self._save_watcher    = None
         self._save_named_prev = None
         self._save_qty_prev   = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         if game_id == "elden_ring" and mode_id in ("vanilla", "reforged"):
             from gui.boss_tracker import _load_settings, _save_settings
             settings = _load_settings()
@@ -726,7 +727,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
         self._active_game_id   = None
         self._active_mode_id   = None
@@ -887,15 +888,23 @@ class App:
         uncollected_by_lower = {
             _item_key(it["name"]): it["name"] for it in items if not it["collected"]
         }
+        now = time.time()
+
+        def _recently_submitted(key, retry_after=10.0):
+            submitted_at = self._save_auto_collect_submitted.get(key)
+            return submitted_at is not None and now - submitted_at < retry_after
+
+        def _submit_collect(key, match, reason):
+            log.info("Live save tracking: auto-collecting %r %s", match, reason)
+            self._save_auto_collect_submitted[key] = now
+            backend.collect_item(match)
+            self._auto_mark_reward_boss(match)
 
         for item_key, match in list(uncollected_by_lower.items()):
-            if item_key in self._save_auto_collect_submitted:
+            if _recently_submitted(item_key):
                 continue
             if item_key in owned_by_lower:
-                log.info("Live save tracking: auto-collecting %r (already owned in save)", match)
-                self._save_auto_collect_submitted.add(item_key)
-                backend.collect_item(match)
-                self._auto_mark_reward_boss(match)
+                _submit_collect(item_key, match, "(already owned in save)")
                 uncollected_by_lower.pop(item_key, None)
 
         for entry in newly_named:
@@ -904,6 +913,16 @@ class App:
             name = _bare_item_name(entry)
             if _item_key(name) in owned_by_lower:
                 log.debug("Live save tracking: newly detected owned item %r", name)
+
+        unmatched_owned = sorted(
+            _bare_item_name(entry)
+            for entry in named_snapshot
+            if _item_key(_bare_item_name(entry)) not in {
+                _item_key(it["name"]) for it in items
+            }
+        )
+        if unmatched_owned:
+            log.debug("Live save tracking: %d owned save items are not in this run checklist", len(unmatched_owned))
 
         # Quantity increases (stackable goods/key items) -- included for
         # parity with tools/live_save_diff.py's approach even though no
@@ -914,13 +933,13 @@ class App:
         for name, qty in qty_snapshot.items():
             prev_qty = self._save_qty_prev.get(name, 0)
             if qty > prev_qty:
-                match = uncollected_by_lower.get(_item_key(name))
+                item_key = _item_key(name)
+                if _recently_submitted(item_key):
+                    continue
+                match = uncollected_by_lower.get(item_key)
                 if match:
-                    log.info("Live save tracking: auto-collecting %r (qty %d -> %d)", match, prev_qty, qty)
-                    self._save_auto_collect_submitted.add(_item_key(name))
-                    backend.collect_item(match)
-                    self._auto_mark_reward_boss(match)
-                    uncollected_by_lower.pop(_item_key(name), None)
+                    _submit_collect(item_key, match, f"(qty {prev_qty} -> {qty})")
+                    uncollected_by_lower.pop(item_key, None)
 
         self._save_named_prev = named_snapshot
         self._save_qty_prev   = qty_snapshot
@@ -1221,7 +1240,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
         if not path or not os.path.isfile(path):
             return
@@ -1364,7 +1383,7 @@ class App:
         """Let live-save tracking re-check the current save after a full reset."""
         self._save_named_prev = None
         self._save_qty_prev = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
 
     def _set_total_deaths(self, value):
