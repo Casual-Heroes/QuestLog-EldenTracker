@@ -19,7 +19,7 @@ log = get_logger("questlog.api")
 BASE_URL        = "https://questlog.casual-heroes.com"
 AUTH_PORT       = 9457
 REQUEST_TIMEOUT = 5
-APP_VERSION     = "1.2.0"
+APP_VERSION     = "1.2.1"
 STATE_RE        = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _LOGIN_LOCK     = threading.Lock()
 
@@ -616,52 +616,35 @@ class QuestLogClient:
 
     def delete_session(self, run_token):
         """
-        Remove a QuestLog run if the server exposes a delete route.
+        Permanently remove a QuestLog run through the desktop delete endpoint.
 
-        Older server builds only expose session/end/. In that case we still
-        call end/ as the safest available server-side cleanup, while the UI
-        removes the local stub and suppresses the stale cached active run.
+        The server keeps a deletion tombstone so stale local stubs do not get
+        re-uploaded on the next profile/run sync.
         """
         token = str(run_token or "").strip()
         if not token:
             return {"ok": False, "error": "missing token"}
 
-        routes = (
-            f"{BASE_URL}/api/soulslike/session/{token}/delete/",
-            f"{BASE_URL}/api/soulslike/desktop/session/{token}/delete/",
-            f"{BASE_URL}/api/soulslike/runs/{token}/delete/",
-        )
-        for url in routes:
-            try:
-                r = self._http.post(url, json={}, headers=self._key_header, timeout=REQUEST_TIMEOUT)
-                if r.ok:
-                    try:
-                        data = r.json() if r.content else {}
-                    except Exception:
-                        data = {}
-                    data["ok"] = True
-                    data["deleted"] = True
-                    return data
-                if r.status_code not in (404, 405):
-                    log.warning("delete_session rejected: status=%s body=%r", r.status_code, r.text[:300])
-                    return {"ok": False, "status": r.status_code, "error": r.text[:300]}
-            except Exception as e:
-                log.warning("delete_session failed for %s: %s", url, e)
-                return {"ok": False, "error": str(e)}
-
+        url = f"{BASE_URL}/api/soulslike/session/{token}/delete/"
         try:
-            r = self._http.post(
-                f"{BASE_URL}/api/soulslike/session/{token}/end/",
-                json={},
+            r = self._http.delete(
+                url,
+                json={"remove_from_leaderboard": True},
                 headers=self._key_header,
                 timeout=REQUEST_TIMEOUT,
             )
             if r.ok:
-                return {"ok": True, "deleted": False, "ended": True}
-            log.warning("delete_session fallback end rejected: status=%s body=%r", r.status_code, r.text[:300])
+                try:
+                    data = r.json() if r.content else {}
+                except Exception:
+                    data = {}
+                data["ok"] = True
+                data["deleted"] = True
+                return data
+            log.warning("delete_session rejected: status=%s body=%r", r.status_code, r.text[:300])
             return {"ok": False, "status": r.status_code, "error": r.text[:300]}
         except Exception as e:
-            log.warning("delete_session fallback end failed: %s", e)
+            log.warning("delete_session failed for %s: %s", url, e)
             return {"ok": False, "error": str(e)}
 
     def get_status(self):

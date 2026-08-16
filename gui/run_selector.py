@@ -673,6 +673,7 @@ class RunSelectorWidget(QWidget):
     server_run_connect = pyqtSignal(dict)
     refresh_requested  = pyqtSignal()
     settings_requested = pyqtSignal()
+    _remote_delete_finished = pyqtSignal(str, str, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -685,6 +686,7 @@ class RunSelectorWidget(QWidget):
         self._server_active  = []  # active runs from last profile fetch
         self._server_history = []  # run history from last profile fetch
         self._deleted_server_tokens = set()
+        self._pending_delete_slugs = set()
         self._update_url = UPDATE_URL
 
         root = QVBoxLayout(self)
@@ -877,6 +879,7 @@ class RunSelectorWidget(QWidget):
 
         self.login_btn.clicked.connect(self.login_requested.emit)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
+        self._remote_delete_finished.connect(self._on_remote_delete_finished)
         self._populate_runs()
 
     def set_logged_in(self, username):
@@ -924,6 +927,8 @@ class RunSelectorWidget(QWidget):
         self.refresh_btn.setVisible(False)
         self._server_active  = []
         self._server_history = []
+        self._deleted_server_tokens = set()
+        self._pending_delete_slugs = set()
         self._populate_runs()
 
     def _populate_runs(self):
@@ -974,6 +979,11 @@ class RunSelectorWidget(QWidget):
 
         # Local runs
         for meta in local_runs:
+            if meta.get("slug") in self._pending_delete_slugs:
+                continue
+            token = meta.get("questlog_token")
+            if token and token in self._deleted_server_tokens:
+                continue
             card = RunCard(meta)
             card.selected.connect(self.run_selected.emit)
             card.deleted.connect(self._on_delete)
@@ -1029,21 +1039,54 @@ class RunSelectorWidget(QWidget):
             self._deleted_server_tokens.add(token)
             self._server_active = [run for run in self._server_active if run.get("token") != token]
             self._server_history = [run for run in self._server_history if run.get("token") != token]
-        self.run_deleted.emit(slug)
-        delete_run(slug)
-        self._populate_runs()
-        if is_questlog_run and self.new_panel._api:
+            self._pending_delete_slugs.add(slug)
+            if not self.new_panel._api:
+                self._deleted_server_tokens.discard(token)
+                self._pending_delete_slugs.discard(slug)
+                QMessageBox.warning(
+                    self,
+                    "Delete Run Failed",
+                    "QuestLog runs must be deleted while logged in and online.",
+                )
+                self._populate_runs()
+                return
+            self._populate_runs()
             import threading
 
             def _delete_remote():
                 result = self.new_panel._api.delete_session(token)
-                if not result.get("ok"):
-                    self._deleted_server_tokens.discard(token)
+                self._remote_delete_finished.emit(slug, token, result or {})
 
             threading.Thread(target=_delete_remote, daemon=True).start()
+            return
 
-    def set_server_runs(self, active_runs, run_history):
+        self.run_deleted.emit(slug)
+        delete_run(slug)
+        self._populate_runs()
+
+    def _on_remote_delete_finished(self, slug, token, result):
+        if result.get("ok"):
+            self.run_deleted.emit(slug)
+            delete_run(slug)
+            self._pending_delete_slugs.discard(slug)
+            self._deleted_server_tokens.add(token)
+            self._server_active = [run for run in self._server_active if run.get("token") != token]
+            self._server_history = [run for run in self._server_history if run.get("token") != token]
+            self._populate_runs()
+            return
+
+        self._pending_delete_slugs.discard(slug)
+        self._deleted_server_tokens.discard(token)
+        self._populate_runs()
+        QMessageBox.warning(
+            self,
+            "Delete Run Failed",
+            str(result.get("error") or "QuestLog could not delete this run. It was kept locally."),
+        )
+
+    def set_server_runs(self, active_runs, run_history, deleted_runs=None):
         self._reset_refresh_btn()
+        self._apply_deleted_runs(deleted_runs or [])
         self._server_active  = [
             run for run in (active_runs or [])
             if run.get("token") not in self._deleted_server_tokens
@@ -1054,6 +1097,24 @@ class RunSelectorWidget(QWidget):
         ]
         self._sync_linked_local_runs_from_server()
         self._populate_runs()
+
+    def _apply_deleted_runs(self, deleted_runs):
+        deleted_tokens = set()
+        for run in deleted_runs or []:
+            token = run.get("token") or run.get("session_token") or run.get("run_token")
+            if token:
+                deleted_tokens.add(token)
+        if not deleted_tokens:
+            return
+        self._deleted_server_tokens.update(deleted_tokens)
+        for meta in list_runs():
+            token = meta.get("questlog_token")
+            if token in deleted_tokens:
+                try:
+                    self.run_deleted.emit(meta["slug"])
+                    delete_run(meta["slug"])
+                except Exception:
+                    pass
 
     def set_api(self, api):
         self.new_panel.set_api(api)

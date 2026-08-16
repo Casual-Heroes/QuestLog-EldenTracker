@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -39,6 +39,29 @@ _BOSS_KEY_ALIASES = {
 
 def _normalize_boss_key(boss_key):
     return _BOSS_KEY_ALIASES.get(boss_key, boss_key)
+
+
+def _seconds_from_status(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        pass
+    parts = text.split(":")
+    if len(parts) in (2, 3) and all(part.strip().isdigit() for part in parts):
+        nums = [int(part.strip()) for part in parts]
+        if len(nums) == 2:
+            mins, secs = nums
+            return max(0, mins * 60 + secs)
+        hours, mins, secs = nums
+        return max(0, hours * 3600 + mins * 60 + secs)
+    return None
 
 
 def _is_game_running(game_id: str = None) -> bool:
@@ -120,6 +143,8 @@ class QuestLogSync:
         self._game_active          = False  # True only when game EXE is detected running
         self._paused_streak_sec    = 0      # streak seconds banked when game stopped
         self._paused_survival_sec  = 0.0   # survival seconds banked when game stopped
+        self._is_paused            = False
+        self._session_state        = ""
 
     def _url(self, path):
         return f"{BASE_URL}/api/soulslike/session/{self.token}/{path}"
@@ -167,7 +192,12 @@ class QuestLogSync:
                 with self._lock:
                     delta = now - self._last_tick
                     self._last_tick = now
-                    if game_running:
+                    if self._is_paused:
+                        if self._game_active and self._life_start_ts:
+                            self._paused_streak_sec = int(now - self._life_start_ts)
+                            self._paused_survival_sec = self._total_survival_sec + (now - self._life_start_ts)
+                        self._life_start_ts = None
+                    elif game_running:
                         self._session_sec += delta
                         if not self._game_active:
                             # Game just started — resume life clock from now
@@ -206,6 +236,7 @@ class QuestLogSync:
                 log.warning("Status poll non-200: status=%d body=%r", sr.status_code, sr.text[:300])
                 return
             data = sr.json()
+            self._apply_pause_status(data)
 
             # Cache items + deaths for UI accessors
             with self._lock:
@@ -247,6 +278,15 @@ class QuestLogSync:
                 self._non_boss_deaths_total = data.get("non_boss_deaths_total", 0)
                 self._lifetime_playtime_sec = data.get("lifetime_playtime_sec", 0)
                 self._lifetime_playtime_fmt = data.get("lifetime_playtime_fmt", "")
+                longest_life = _seconds_from_status(
+                    data.get("longest_life_sec")
+                    or data.get("longest_life_seconds")
+                    or data.get("longest_life")
+                    or data.get("longest_sec")
+                    or data.get("longest_life_fmt")
+                )
+                if longest_life is not None:
+                    self._longest_life = max(float(longest_life), float(self._longest_life or 0))
                 # Both null (not 0) from the server until their respective
                 # played-time clock passes 600s -- preserved as None here,
                 # NOT defaulted to 0, so the UI can tell "no data yet" apart
@@ -402,6 +442,42 @@ class QuestLogSync:
         })
         return payload
 
+    def _apply_pause_status(self, status):
+        if not isinstance(status, dict):
+            return
+        timer_rebase = None
+        with self._lock:
+            if "is_paused" in status:
+                self._is_paused = bool(status.get("is_paused"))
+            if status.get("session_state") is not None:
+                self._session_state = str(status.get("session_state") or "")
+            if self._is_paused:
+                now = time.time()
+                if self._life_start_ts:
+                    self._paused_streak_sec = int(now - self._life_start_ts)
+                    self._paused_survival_sec = self._total_survival_sec + (now - self._life_start_ts)
+                self._life_start_ts = None
+            if isinstance(status.get("timer_rebase"), dict):
+                timer_rebase = dict(status.get("timer_rebase"))
+        if timer_rebase:
+            self._apply_timer_rebase(timer_rebase)
+
+    def _apply_timer_rebase(self, timer_rebase):
+        now = time.time()
+        try:
+            session_sec = int(timer_rebase.get("session_sec", self._session_sec) or 0)
+        except (TypeError, ValueError):
+            session_sec = int(self._session_sec)
+        try:
+            streak_sec = int(timer_rebase.get("streak_sec", self._paused_streak_sec) or 0)
+        except (TypeError, ValueError):
+            streak_sec = int(self._paused_streak_sec)
+        with self._lock:
+            self._session_sec = max(0, session_sec)
+            self._paused_streak_sec = max(0, streak_sec)
+            self._last_tick = now
+            self._life_start_ts = None if self._is_paused else now - self._paused_streak_sec
+
     def _reset_session_timers(self, now):
         """Reset session-scoped stats only. Keeps run-scoped longest_life. Lock must be held."""
         self._session_sec          = 0.0
@@ -532,7 +608,7 @@ class QuestLogSync:
 
     def current_streak_sec(self):
         with self._lock:
-            if not self._game_active or self._life_start_ts is None:
+            if self._is_paused or not self._game_active or self._life_start_ts is None:
                 return self._paused_streak_sec
             return int(time.time() - self._life_start_ts)
 
@@ -542,9 +618,17 @@ class QuestLogSync:
 
     def current_survival_sec(self):
         with self._lock:
-            if not self._game_active or self._life_start_ts is None:
+            if self._is_paused or not self._game_active or self._life_start_ts is None:
                 return int(self._paused_survival_sec)
             return int(self._total_survival_sec + (time.time() - self._life_start_ts))
+
+    def is_paused(self):
+        with self._lock:
+            return bool(self._is_paused)
+
+    def session_state(self):
+        with self._lock:
+            return self._session_state
 
     def get_true_death_rate(self):
         with self._lock:
@@ -652,7 +736,37 @@ class QuestLogSync:
 
     _MAX_LIFE_SEC = 43200  # 12h sanity cap — guards against stale timestamps
 
+    def pause(self):
+        self._apply_pause_status({"is_paused": True, "session_state": "paused"})
+        threading.Thread(target=self._post_pause_state, args=(True,), daemon=True).start()
+
+    def resume(self):
+        threading.Thread(target=self._post_pause_state, args=(False,), daemon=True).start()
+
+    def _post_pause_state(self, paused):
+        endpoint = "pause/" if paused else "resume/"
+        try:
+            r = self._http.post(self._url(endpoint), json={}, headers=self._headers(), timeout=5)
+            if r.ok:
+                status = self._apply_death_count_status(r.json() if r.content else {"is_paused": paused})
+                if self._on_server_sync:
+                    self._on_server_sync(status or {"is_paused": paused})
+                log.info("QuestLog run %s", "paused" if paused else "resumed")
+            else:
+                log.warning("%s rejected: status=%d body=%r", endpoint.rstrip("/"), r.status_code, r.text[:300])
+                self._apply_pause_status({"is_paused": not paused})
+                if self._on_server_sync:
+                    self._on_server_sync({"is_paused": not paused})
+        except Exception as e:
+            log.warning("%s failed: %s", endpoint.rstrip("/"), e)
+            self._apply_pause_status({"is_paused": not paused})
+            if self._on_server_sync:
+                self._on_server_sync({"is_paused": not paused})
+
     def on_death(self, boss="", boss_key=None, on_death_response=None):
+        if self.is_paused():
+            log.info("Death ignored -- QuestLog run is paused")
+            return
         if boss_key is None:
             boss_key = boss
         boss_key = _normalize_boss_key(boss_key)
@@ -677,6 +791,9 @@ class QuestLogSync:
         ).start()
 
     def on_subtract(self):
+        if self.is_paused():
+            log.info("Subtract ignored -- QuestLog run is paused")
+            return
         with self._lock:
             if self._subtract_in_flight:
                 log.info("Subtract ignored -- request already in flight")
@@ -714,6 +831,7 @@ class QuestLogSync:
         status = self._death_count_status(data)
         if not status:
             return {}
+        self._apply_pause_status(status)
         with self._lock:
             has_death_total = any(
                 key in status
@@ -770,8 +888,15 @@ class QuestLogSync:
                 self._rage_name = status.get("rage_name") or "Maiden's Grace"
             if "hollow_streak" in status:
                 self._hollow_streak = int(status.get("hollow_streak") or 0)
-            if "longest_life" in status:
-                self._longest_life = max(self._longest_life, float(status.get("longest_life") or 0))
+            longest_life = _seconds_from_status(
+                status.get("longest_life_sec")
+                or status.get("longest_life_seconds")
+                or status.get("longest_life")
+                or status.get("longest_sec")
+                or status.get("longest_life_fmt")
+            )
+            if longest_life is not None:
+                self._longest_life = max(self._longest_life, float(longest_life))
             if "total_survival" in status:
                 self._total_survival_sec = float(status.get("total_survival") or 0)
             if "current_life_sec" in status:
@@ -823,6 +948,9 @@ class QuestLogSync:
             log.warning("Death count correction failed: %s", e)
 
     def on_reset(self):
+        if self.is_paused():
+            log.info("Reset ignored -- QuestLog run is paused")
+            return
         now = time.time()
         with self._lock:
             self._reset_timers(now)
@@ -873,6 +1001,9 @@ class QuestLogSync:
     # ── Boss focus / mark / unmark ────────────────────────────────────────────
 
     def set_focus(self, boss_name, boss_key=None):
+        if self.is_paused():
+            log.info("set_focus ignored -- QuestLog run is paused")
+            return
         """
         boss_key disambiguates bosses that share a boss_name across different
         locations (e.g. "Erdtree Avatar" fought in 6 different areas) -- always
@@ -896,6 +1027,9 @@ class QuestLogSync:
             log.warning("set_focus failed: %s", e, exc_info=True)
 
     def clear_focus(self):
+        if self.is_paused():
+            log.info("clear_focus ignored -- QuestLog run is paused")
+            return
         with self._lock:
             self._current_boss     = ""
             self._current_boss_key = ""
@@ -909,6 +1043,9 @@ class QuestLogSync:
 
     def mark_boss(self, boss_key):
         """Returns response dict with rage_pct/rage_name if successful, else None."""
+        if self.is_paused():
+            log.info("mark_boss ignored -- QuestLog run is paused")
+            return {}
         boss_key = _normalize_boss_key(boss_key)
         with self._lock:
             self._current_boss     = ""
@@ -948,6 +1085,9 @@ class QuestLogSync:
         return None
 
     def unmark_boss(self, boss_key):
+        if self.is_paused():
+            log.info("unmark_boss ignored -- QuestLog run is paused")
+            return
         boss_key = _normalize_boss_key(boss_key)
         threading.Thread(
             target=self._post, args=("boss/unmark/", {"boss_key": boss_key}), daemon=True

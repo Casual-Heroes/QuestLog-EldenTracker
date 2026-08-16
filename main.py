@@ -37,7 +37,7 @@ OVERLAY_PORT = 8765
 
 
 class _ServerRunsReady(QObject):
-    ready = pyqtSignal(list, list)  # active_runs, run_history
+    ready = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
 
 class _LoginReady(QObject):
     success = pyqtSignal(str, str, dict)  # api_key, username, profile
@@ -75,8 +75,12 @@ class _FocusHotkeyBridge(QObject):
     unfocus_requested = pyqtSignal()
     defeat_requested  = pyqtSignal()
 
+class _RunActionHotkeyBridge(QObject):
+    pause_requested   = pyqtSignal()
+    end_run_requested = pyqtSignal()
+
 class _RunPollReady(QObject):
-    updated = pyqtSignal(list, list)  # active_runs, run_history
+    updated = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
 
 class _LeaderboardSubmitReady(QObject):
     """
@@ -238,6 +242,10 @@ class App:
         self._focus_hotkey_bridge.defeat_requested.connect(self._defeat_focused_boss)
 
         # Bridge for F8/F9/F10 hotkeys (fire on keyboard lib's thread) → main thread
+        self._run_action_hotkey_bridge = _RunActionHotkeyBridge()
+        self._run_action_hotkey_bridge.pause_requested.connect(self._toggle_paused_from_hotkey)
+        self._run_action_hotkey_bridge.end_run_requested.connect(self._on_end_run_clicked)
+
         self._death_hotkey_bridge = _DeathHotkeyBridge()
 
         # Bridge for run poller updates → main thread
@@ -413,6 +421,9 @@ class App:
             if self._run_ended:
                 log.info("DEATH ignored -- run has ended")
                 return
+            if self._is_run_paused():
+                log.info("DEATH ignored -- run is paused")
+                return
             boss = self._ql_sync.get_current_boss() if self._ql_sync else ""
             boss_key = self._ql_sync.get_current_boss_key() if self._ql_sync else ""
             if self._ql_sync:
@@ -450,6 +461,9 @@ class App:
             if self._run_ended:
                 log.info("SUBTRACT DEATH ignored -- run has ended")
                 return
+            if self._is_run_paused():
+                log.info("SUBTRACT DEATH ignored -- run is paused")
+                return
             # Guard against double-fire: F10 hotkey and the UI Subtract
             # button both route here now, and could otherwise both land
             # within the same instant (e.g. hotkey + accidental click).
@@ -485,6 +499,9 @@ class App:
             if self._run_ended:
                 log.info("RESET ALL DEATHS ignored -- run has ended")
                 return
+            if self._is_run_paused():
+                log.info("RESET ALL DEATHS ignored -- run is paused")
+                return
             self._session.reset_total_deaths()
             self._deaths.reset()
             self._reset_live_save_reconciliation()
@@ -505,16 +522,31 @@ class App:
                 self._deaths.record_kill(tier=tier or ENEMY)
 
         def on_focus_hotkey():
+            if self._is_run_paused():
+                log.info("FOCUS ignored -- run is paused")
+                return
             # Fires on the `keyboard` lib's own thread -- emit a signal so
             # the actual dialog/widget work happens on the main Qt thread
             # (see _FocusHotkeyBridge docstring).
             self._focus_hotkey_bridge.focus_requested.emit()
 
         def on_unfocus_hotkey():
+            if self._is_run_paused():
+                log.info("UNFOCUS ignored -- run is paused")
+                return
             self._focus_hotkey_bridge.unfocus_requested.emit()
 
         def on_defeat_hotkey():
+            if self._is_run_paused():
+                log.info("DEFEAT BOSS ignored -- run is paused")
+                return
             self._focus_hotkey_bridge.defeat_requested.emit()
+
+        def on_pause_hotkey():
+            self._run_action_hotkey_bridge.pause_requested.emit()
+
+        def on_end_run_hotkey():
+            self._run_action_hotkey_bridge.end_run_requested.emit()
 
         # F8/F9/F10 fire on the `keyboard` lib's own thread too (see
         # _DeathHotkeyBridge docstring) -- these are what get passed to
@@ -559,6 +591,8 @@ class App:
             "focus":    saved.get("hotkey_focus",    "f4"),
             "unfocus":  saved.get("hotkey_unfocus",  "f5"),
             "defeat":   saved.get("hotkey_defeat",   "f11"),
+            "pause":    saved.get("hotkey_pause",    "f6"),
+            "end_run":  saved.get("hotkey_end_run",  "f7"),
         }
 
         self._detector = Detector(
@@ -569,6 +603,8 @@ class App:
             on_focus=on_focus_hotkey,
             on_unfocus=on_unfocus_hotkey,
             on_defeat=on_defeat_hotkey,
+            on_pause=on_pause_hotkey,
+            on_end_run=on_end_run_hotkey,
             hotkeys=hotkeys,
         )
         self._detector.start()
@@ -609,6 +645,8 @@ class App:
         self._tracker.mortality_tab.set_can_submit(bool(self._active_questlog_token))
         self._tracker.mortality_tab.set_submitted(self._run_submitted)
         self._tracker.mortality_tab.set_ended(self._run_ended)
+        if self._ql_sync:
+            self._tracker.mortality_tab.set_paused(self._ql_sync.is_paused())
 
         self._tracker.switch_run.connect(self._go_to_selector)
         # Route the UI's Add/Subtract/Reset buttons through the SAME handlers
@@ -630,6 +668,7 @@ class App:
         self._tracker.mortality_tab.sig_unfocus_boss.connect(on_unfocus_hotkey)
         self._tracker.mortality_tab.sig_end_run.connect(self._on_end_run_clicked)
         self._tracker.mortality_tab.sig_submit_leaderboard.connect(self._on_submit_leaderboard_clicked)
+        self._tracker.mortality_tab.sig_pause_toggled.connect(self._set_paused)
         self._tracker.settings_tab.hotkeys_changed.connect(self._detector.update_hotkeys)
         self._tracker.settings_tab.save_path_changed.connect(self._on_save_path_changed)
         self._tracker.settings_tab.login_requested.connect(self._do_login)
@@ -712,6 +751,24 @@ class App:
                 self._selector_win.setGeometry(_clamped_geo_from(saved_geo, self._selector_win))
             self._selector_win.show()
         self._selector_win._widget._populate_runs()
+
+    def _is_run_paused(self):
+        return bool(self._ql_sync and self._ql_sync.is_paused())
+
+    def _set_paused(self, paused):
+        if not self._ql_sync or self._run_ended:
+            return
+        if self._tracker:
+            self._tracker.mortality_tab.set_paused(bool(paused))
+        if paused:
+            self._ql_sync.pause()
+        else:
+            self._ql_sync.resume()
+
+    def _toggle_paused_from_hotkey(self):
+        if not self._ql_sync or self._run_ended:
+            return
+        self._set_paused(not self._ql_sync.is_paused())
 
     def _stop_active(self):
         self._timer.stop()
@@ -1001,6 +1058,7 @@ class App:
         from gui.boss_tracker import _load_settings, _save_settings
         active_runs = profile.get("active_runs", [])
         run_history = profile.get("run_history", [])
+        deleted_runs = profile.get("deleted_runs", [])
 
         # Save non-secret profile state only. QuestLogClient.login() stores the
         # listener key in the current Windows user's DPAPI-protected app data.
@@ -1011,7 +1069,7 @@ class App:
         self._api = QuestLogClient(api_key, s.get("session_token", ""))
         self._selector_win._widget.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
-        self._selector_win._widget.set_server_runs(active_runs, run_history)
+        self._selector_win._widget.set_server_runs(active_runs, run_history, deleted_runs)
 
         if self._tracker:
             self._tracker.settings_tab.login_succeeded.emit(api_key, username, active_runs)
@@ -1200,8 +1258,9 @@ class App:
                 profile = {}
             active_runs = profile.get("active_runs", [])
             run_history = profile.get("run_history", [])
+            deleted_runs = profile.get("deleted_runs", [])
             log.info("Server runs — active=%d history=%d", len(active_runs), len(run_history))
-            notifier.ready.emit(active_runs, run_history)
+            notifier.ready.emit(active_runs, run_history, deleted_runs)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -1450,6 +1509,8 @@ class App:
         """Main-thread handler: mirror web-side state changes (reset, undo) into local trackers."""
         if not (self._session and self._deaths):
             return
+        if "is_paused" in data and self._tracker:
+            self._tracker.mortality_tab.set_paused(bool(data.get("is_paused")))
         if data.get("reset"):
             self._session.reset_total_deaths()
             self._deaths.reset()
