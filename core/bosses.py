@@ -1,5 +1,7 @@
 import json
 import os
+
+from core.catalog_sync import CatalogStore, CatalogSyncError
 from games.registry import TIER_DECAY, ENEMY, GREAT_ENEMY, LEGEND, DEMIGOD, GOD, load_boss_list
 
 # Re-export tier constants so existing imports keep working
@@ -11,22 +13,73 @@ TIER_GOD         = GOD
 
 
 class BossTracker:
-    def __init__(self, game_id, mode_id, run_dir):
+    def __init__(self, game_id, mode_id, run_dir, catalog_store=None):
         self._state_file = os.path.join(run_dir, "bosses.json")
-        raw = load_boss_list(game_id, mode_id)
+        self._catalog_store = catalog_store or CatalogStore()
 
         self.bosses = {}
-        for name, location, group, tier in raw:
-            key = f"{name} ({location})"
+        for boss in self._load_catalog_bosses(game_id, mode_id):
+            key = boss["key"]
             self.bosses[key] = {
-                "name":     name,
-                "location": location,
-                "group":    group,
+                "name":     boss["name"],
+                "location": boss["location"],
+                "region":   boss["region"],
+                "group":    boss["region"],
                 "defeated": False,
-                "tier":     tier,
+                "tier":     boss["tier"],
                 "deaths":   0,
             }
         self._load()
+
+    @staticmethod
+    def _dataset_name(game_id, mode_id):
+        mode = {"err": "reforged"}.get(mode_id, mode_id)
+        if game_id == "elden_ring" and mode == "reforged":
+            return "bosses_err"
+        if game_id == "elden_ring" and mode == "vanilla":
+            return "bosses_vanilla"
+        return None
+
+    def _load_catalog_bosses(self, game_id, mode_id):
+        dataset_name = self._dataset_name(game_id, mode_id)
+        if dataset_name:
+            try:
+                dataset = self._catalog_store.load(dataset_name)
+                bosses = dataset.get("bosses") if isinstance(dataset, dict) else None
+                if isinstance(bosses, list) and bosses:
+                    return [self._canonical_boss(row) for row in bosses]
+            except (CatalogSyncError, KeyError, TypeError, ValueError):
+                pass
+
+        # Offline safety fallback for games/modes that have not been migrated
+        # to QuestLog datasets yet. Elden Ring/ERR should normally never need
+        # this once a bundled or cached catalog is present.
+        raw = load_boss_list(game_id, mode_id)
+        return [
+            {
+                "key": f"{name} ({location})",
+                "name": name,
+                "location": location,
+                "region": group,
+                "tier": tier,
+            }
+            for name, location, group, tier in raw
+        ]
+
+    @staticmethod
+    def _canonical_boss(row):
+        key = str(row["key"])
+        name = str(row.get("name") or key)
+        location = str(row.get("location") or "")
+        region = str(row.get("region") or location or "Other")
+        tier = str(row.get("tier") or ENEMY)
+        return {
+            "key": key,
+            "name": name,
+            "location": location,
+            "region": region,
+            "tier": tier,
+        }
 
     def _load(self):
         if os.path.isfile(self._state_file):
@@ -37,19 +90,26 @@ class BossTracker:
                     if key in self.bosses:
                         self.bosses[key]["defeated"] = state.get("defeated", False)
                         self.bosses[key]["deaths"] = int(state.get("deaths", 0) or 0)
+                        for field in ("defeated_at", "last_death_at", "updated_at"):
+                            if field in state:
+                                self.bosses[key][field] = state[field]
             except Exception:
                 pass
 
     def save(self):
         os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
+        state = {}
+        for key, boss in self.bosses.items():
+            entry = {
+                "defeated": boss["defeated"],
+                "deaths": int(boss.get("deaths", 0) or 0),
+            }
+            for field in ("defeated_at", "last_death_at", "updated_at"):
+                if field in boss:
+                    entry[field] = boss[field]
+            state[key] = entry
         with open(self._state_file, "w") as f:
-            json.dump(
-                {
-                    k: {"defeated": v["defeated"], "deaths": int(v.get("deaths", 0) or 0)}
-                    for k, v in self.bosses.items()
-                },
-                f, indent=2,
-            )
+            json.dump(state, f, indent=2)
 
     def mark_defeated(self, key):
         if key in self.bosses:
@@ -81,6 +141,7 @@ class BossTracker:
                 "key":      key,
                 "name":     d["name"],
                 "location": d["location"],
+                "region":   d.get("region", d["group"]),
                 "group":    d["group"],
                 "defeated": d["defeated"],
                 "tier":     d["tier"],

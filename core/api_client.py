@@ -9,7 +9,7 @@ import threading
 import time
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 from core.crash_logger import get_logger
 from core.catalog_sync import CatalogStore
 from core.credentials import CredentialStorageError, save_api_key
@@ -19,7 +19,7 @@ log = get_logger("questlog.api")
 BASE_URL        = "https://questlog.casual-heroes.com"
 AUTH_PORT       = 9457
 REQUEST_TIMEOUT = 5
-APP_VERSION     = "1.1.2c"
+APP_VERSION     = "1.2.1a"
 STATE_RE        = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _LOGIN_LOCK     = threading.Lock()
 
@@ -266,9 +266,10 @@ class QuestLogClient:
         QuestLogSync's copy of this method, which is reached once a run is
         active and has both.
         """
+        build_path_id = quote(str(build_id), safe="")
         try:
             r = self._http.get(
-                f"{BASE_URL}/api/soulslike/desktop/builds/{build_id}/",
+                f"{BASE_URL}/api/soulslike/desktop/builds/{build_path_id}/",
                 headers=self._key_header,
                 params={'game': game},
                 timeout=10,
@@ -290,9 +291,10 @@ class QuestLogClient:
 
     def _get_shared_build_detail(self, build_key, game='elden_ring'):
         """Fallback for build rows keyed by share_token instead of desktop id."""
+        build_path_key = quote(str(build_key), safe="")
         try:
             r = self._http.get(
-                f"{BASE_URL}/api/soulslike/builds/{build_key}/",
+                f"{BASE_URL}/api/soulslike/builds/{build_path_key}/",
                 params={'game': game},
                 timeout=10,
             )
@@ -476,6 +478,91 @@ class QuestLogClient:
             log.warning("save_build failed: %s", e)
             return {"error": str(e)}
 
+    def delete_build(self, build_id, game='elden_ring'):
+        """Delete a QuestLog cloud build through the desktop endpoint."""
+        build_path_id = quote(str(build_id), safe="")
+        try:
+            r = self._http.post(
+                f"{BASE_URL}/api/soulslike/desktop/builds/{build_path_id}/delete/",
+                headers=self._key_header,
+                params={'game': game},
+                json={},
+                timeout=30,
+            )
+            if not r.ok:
+                log.warning("delete_build(game=%s) non-200: status=%d body=%r",
+                            game, r.status_code, r.text[:500])
+                try:
+                    return r.json()
+                except Exception:
+                    return {"error": f"HTTP {r.status_code}"}
+            return r.json() if r.content else {"ok": True}
+        except Exception as e:
+            log.warning("delete_build failed: %s", e)
+            return {"error": str(e)}
+
+    def get_build_history(self, build_id, game='elden_ring', version=None):
+        """Fetch build revision history or one exact history snapshot."""
+        build_path_id = quote(str(build_id), safe="")
+        try:
+            params = {'game': game}
+            if version is not None:
+                params['version'] = version
+            paths = [
+                f"/api/soulslike/desktop/builds/{build_path_id}/history/",
+                f"/api/soulslike/desktop/builds/{build_path_id}/history",
+                f"/api/soulslike/desktop/builds/history/{build_path_id}/",
+                f"/api/soulslike/desktop/build-history/{build_path_id}/",
+            ]
+            last_response = None
+            for path in paths:
+                r = self._http.get(
+                    f"{BASE_URL}{path}",
+                    headers=self._key_header,
+                    params=params,
+                    timeout=30,
+                )
+                if r.ok:
+                    return r.json() if r.content else {}
+                last_response = r
+                if r.status_code != 404:
+                    break
+            if last_response is not None:
+                log.warning("get_build_history(game=%s) non-200: status=%d body=%r",
+                            game, last_response.status_code, last_response.text[:500])
+                if last_response.status_code == 404:
+                    return {"error": "Build history endpoint not found on QuestLog. Deploy/restart the site with the new history route, then try again."}
+                try:
+                    return last_response.json()
+                except Exception:
+                    return {"error": f"HTTP {last_response.status_code}"}
+            return {"error": "Build history failed before sending a request"}
+        except Exception as e:
+            log.warning("get_build_history failed: %s", e)
+            return {"error": str(e)}
+
+    def restore_build_history(self, build_id, version, game='elden_ring'):
+        """
+        Restore a historical build version by reposting the server snapshot.
+        The server creates a new current revision; history is not overwritten.
+        """
+        snapshot_response = self.get_build_history(build_id, game=game, version=version)
+        if snapshot_response.get("error"):
+            return snapshot_response
+        snapshot = (
+            snapshot_response.get("snapshot")
+            or snapshot_response.get("build")
+            or snapshot_response.get("payload")
+            or snapshot_response.get("data")
+            or snapshot_response
+        )
+        if not isinstance(snapshot, dict):
+            return {"error": "History snapshot was not a build payload"}
+        payload = dict(snapshot)
+        payload["build_id"] = build_id
+        payload["history_restore_version"] = version
+        return self.save_build(payload, game=game)
+
     def create_session(self, game, game_mode, build_name="", items=None):
         """
         Start a new run session on the server.
@@ -526,6 +613,39 @@ class QuestLogClient:
             return {}
 
     # ── Status poll ───────────────────────────────────────────────────────────
+
+    def delete_session(self, run_token):
+        """
+        Permanently remove a QuestLog run through the desktop delete endpoint.
+
+        The server keeps a deletion tombstone so stale local stubs do not get
+        re-uploaded on the next profile/run sync.
+        """
+        token = str(run_token or "").strip()
+        if not token:
+            return {"ok": False, "error": "missing token"}
+
+        url = f"{BASE_URL}/api/soulslike/session/{token}/delete/"
+        try:
+            r = self._http.delete(
+                url,
+                json={"remove_from_leaderboard": True},
+                headers=self._key_header,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if r.ok:
+                try:
+                    data = r.json() if r.content else {}
+                except Exception:
+                    data = {}
+                data["ok"] = True
+                data["deleted"] = True
+                return data
+            log.warning("delete_session rejected: status=%s body=%r", r.status_code, r.text[:300])
+            return {"ok": False, "status": r.status_code, "error": r.text[:300]}
+        except Exception as e:
+            log.warning("delete_session failed for %s: %s", url, e)
+            return {"ok": False, "error": str(e)}
 
     def get_status(self):
         """Poll full session status. Returns dict or None. Blocking — call from thread."""

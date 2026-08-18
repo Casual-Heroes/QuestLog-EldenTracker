@@ -31,7 +31,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 UPDATE_URL  = SITE_URL + "/soulslike/"
-APP_VERSION = "1.1.2c"
+APP_VERSION = "1.2.1"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -684,6 +684,7 @@ class MortalityTab(QWidget):
     sig_unfocus_boss   = pyqtSignal()   # button equivalent of the unfocus hotkey
     sig_end_run        = pyqtSignal()   # explicit "End Run" -- ends server-side, keeps app/window open
     sig_submit_leaderboard = pyqtSignal()   # "Submit to Leaderboard" -- only enabled once ended
+    sig_pause_toggled  = pyqtSignal(bool)
 
     def __init__(self, session=None, deaths=None, rage_label="Rage Index", parent=None):
         super().__init__(parent)
@@ -693,6 +694,7 @@ class MortalityTab(QWidget):
         self._ended     = False   # run has been explicitly ended (server-side + meta.json)
         self._submitted = False   # run has been submitted to the leaderboard (one-shot)
         self._can_submit = False  # whether Submit is even applicable (cloud-synced run w/ a token)
+        self._paused    = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 28, 24, 24)
@@ -833,6 +835,10 @@ class MortalityTab(QWidget):
         # is an explicit, separate action that keeps the app/window open.
         end_run_row = QHBoxLayout()
         end_run_row.setSpacing(8)
+        self.pause_btn = _action_btn("PAUSE", color=BG_SURFACE)
+        self.pause_btn.setToolTip("Hold run timers and disable death/boss actions until resumed")
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        self._pause_btn_default_style = self.pause_btn.styleSheet()
         self.end_run_btn = _action_btn("⏹ END RUN", color=BG_SURFACE)
         self.end_run_btn.clicked.connect(self.sig_end_run)
         self.submit_leaderboard_btn = _action_btn("🏆 SUBMIT TO LEADERBOARD", color=ACCENT_GOLD)
@@ -852,6 +858,7 @@ class MortalityTab(QWidget):
         """)
         self.submit_leaderboard_btn.clicked.connect(self.sig_submit_leaderboard)
         self.submit_leaderboard_btn.setVisible(False)   # only shown once ended
+        end_run_row.addWidget(self.pause_btn, 1)
         end_run_row.addWidget(self.end_run_btn, 1)
         end_run_row.addWidget(self.submit_leaderboard_btn, 1)
         outer.addLayout(end_run_row)
@@ -935,15 +942,43 @@ class MortalityTab(QWidget):
         load, so it must be idempotent / safe to call redundantly.
         """
         self._ended = ended
-        self.log_death_btn.setEnabled(not ended)
-        self.undo_btn.setEnabled(not ended)
-        self.full_reset_btn.setEnabled(not ended)
-        self.reset_bosses_btn.setEnabled(not ended)
-        self.set_total_btn.setEnabled(not ended)
-        self.set_session_btn.setEnabled(not ended)
-        self.end_run_btn.setEnabled(not ended)
+        self._refresh_run_action_state()
         self.end_run_btn.setText("ENDED" if ended else "⏹ END RUN")
         self.submit_leaderboard_btn.setVisible(ended and self._can_submit and not self._submitted)
+
+    def _toggle_pause(self):
+        if self._ended:
+            return
+        self.sig_pause_toggled.emit(not self._paused)
+
+    def set_paused(self, paused: bool):
+        self._paused = bool(paused)
+        self.pause_btn.setText("RESUME" if self._paused else "PAUSE")
+        if self._paused:
+            self.pause_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(201,168,76,0.16); border: 1px solid {ACCENT_GOLD};
+                    border-radius: 6px; color: {ACCENT_GOLD};
+                    padding: 8px 14px; font-size: 11px; font-weight: 700;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{ background: rgba(201,168,76,0.26); }}
+                QPushButton:disabled {{ background: {BG_SURFACE}; color: {TEXT_DIM}; border-color: {BORDER_SOLID}; }}
+            """)
+        else:
+            self.pause_btn.setStyleSheet(self._pause_btn_default_style)
+        self._refresh_run_action_state()
+
+    def _refresh_run_action_state(self):
+        actions_enabled = not self._ended and not self._paused
+        self.log_death_btn.setEnabled(actions_enabled)
+        self.undo_btn.setEnabled(actions_enabled)
+        self.full_reset_btn.setEnabled(actions_enabled)
+        self.reset_bosses_btn.setEnabled(actions_enabled)
+        self.set_total_btn.setEnabled(actions_enabled)
+        self.set_session_btn.setEnabled(actions_enabled)
+        self.end_run_btn.setEnabled(not self._ended)
+        self.pause_btn.setEnabled(not self._ended)
 
     def set_can_submit(self, can_submit: bool):
         """Whether Submit is even applicable -- only cloud-synced runs with a questlog_token."""
@@ -1036,9 +1071,14 @@ class MortalityTab(QWidget):
     def update_stats(self, session, deaths, ql_sync=None, bosses_defeated=0):
         self._session = session
         self._deaths  = deaths
+        if ql_sync:
+            self.set_paused(ql_sync.is_paused())
 
         self._session_card._value_lbl.setText(str(session.session_deaths))
-        self._session_card2._value_lbl.setText(session.elapsed_str())
+        if ql_sync:
+            self._session_card2._value_lbl.setText(_clock_display(ql_sync.session_time_sec()))
+        else:
+            self._session_card2._value_lbl.setText(session.elapsed_str())
 
         server_rate = ql_sync.get_true_death_rate() if ql_sync else None
         _dpb = server_rate if server_rate is not None else deaths.deaths_per_boss(bosses_defeated)
@@ -1150,6 +1190,14 @@ def _hours_minutes_display(total_sec):
     return f"{hours}:{mins:02d}"
 
 
+def _clock_display(total_sec):
+    total_sec = max(0, int(total_sec))
+    hours = total_sec // 3600
+    mins = (total_sec % 3600) // 60
+    secs = total_sec % 60
+    return f"{hours:02}:{mins:02}:{secs:02}"
+
+
 def _run_duration_display(started_at):
     if not started_at:
         return "--"
@@ -1176,6 +1224,8 @@ def _load_settings():
         "hotkey_focus":    "f4",
         "hotkey_unfocus":  "f5",
         "hotkey_defeat":   "f11",
+        "hotkey_pause":    "f6",
+        "hotkey_end_run":  "f7",
         "save_file_path":  "",
         "session_token":   "",
         "username":        "",
@@ -1760,6 +1810,8 @@ class SettingsTab(QWidget):
             ("hotkey_focus",    "Focus Boss",             "f4"),
             ("hotkey_unfocus",  "Unfocus Boss",           "f5"),
             ("hotkey_defeat",   "Defeat Focused Boss",    "f11"),
+            ("hotkey_pause",    "Pause / Resume Run",     "f6"),
+            ("hotkey_end_run",  "End Run",                "f7"),
         ]:
             self._hk_fields[key] = self._make_hotkey_row(outer, label, settings.get(key, default))
 
@@ -2073,6 +2125,8 @@ class SettingsTab(QWidget):
             "hotkey_focus":    "f4",
             "hotkey_unfocus":  "f5",
             "hotkey_defeat":   "f11",
+            "hotkey_pause":    "f6",
+            "hotkey_end_run":  "f7",
         }
         changed = False
         for key, default in mapping.items():
@@ -2091,6 +2145,8 @@ class SettingsTab(QWidget):
                 "focus":    self._settings.get("hotkey_focus",    "f4"),
                 "unfocus":  self._settings.get("hotkey_unfocus",  "f5"),
                 "defeat":   self._settings.get("hotkey_defeat",   "f11"),
+                "pause":    self._settings.get("hotkey_pause",    "f6"),
+                "end_run":  self._settings.get("hotkey_end_run",  "f7"),
             })
 
     # ── Login UI ──────────────────────────────────────────────────────────────
@@ -2330,7 +2386,7 @@ class BossTrackerWindow(QMainWindow):
 
         self.update_btn = QPushButton("UPDATE AVAILABLE")
         self.update_btn.setFixedHeight(30)
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2417,7 +2473,7 @@ class BossTrackerWindow(QMainWindow):
         self._update_url = (info or {}).get("release_url") or (info or {}).get("download_url") or UPDATE_URL
         label = f"UPDATE {version}" if version else "UPDATE AVAILABLE"
         self.update_btn.setText(label.upper())
-        self.update_btn.setToolTip("Download the latest EldenTracker release")
+        self.update_btn.setToolTip("Download the latest EldenTracker release from QuestLog")
         self.update_btn.setVisible(True)
 
     def _open_settings_dialog(self):

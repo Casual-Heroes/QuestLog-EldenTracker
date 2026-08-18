@@ -2,6 +2,7 @@ import sys
 import os
 import threading
 import http.server
+import time
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts.warning=false"
 
 if sys.platform == "win32":
@@ -18,6 +19,7 @@ from PyQt6.QtGui import QIcon
 
 from core.paths import assets as _assets_path, overlay as _overlay_path
 _ICO_CH = _assets_path("CH.ico")
+from core.item_name_normalizer import item_key as _save_item_key
 from core.run import load_run_meta, get_run_dir, save_active_slug, update_run_meta
 from core.session import Session
 from core.deaths import DeathTracker
@@ -34,8 +36,22 @@ TICK_MS      = 1000
 OVERLAY_PORT = 8765
 
 
+def _status_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "defeated", "complete", "completed"}:
+            return True
+        if text in {"0", "false", "no", "n", "alive", "incomplete", ""}:
+            return False
+    return bool(value)
+
+
 class _ServerRunsReady(QObject):
-    ready = pyqtSignal(list, list)  # active_runs, run_history
+    ready = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
 
 class _LoginReady(QObject):
     success = pyqtSignal(str, str, dict)  # api_key, username, profile
@@ -73,8 +89,12 @@ class _FocusHotkeyBridge(QObject):
     unfocus_requested = pyqtSignal()
     defeat_requested  = pyqtSignal()
 
+class _RunActionHotkeyBridge(QObject):
+    pause_requested   = pyqtSignal()
+    end_run_requested = pyqtSignal()
+
 class _RunPollReady(QObject):
-    updated = pyqtSignal(list, list)  # active_runs, run_history
+    updated = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
 
 class _LeaderboardSubmitReady(QObject):
     """
@@ -111,8 +131,8 @@ def _start_catalog_sync():
     try:
         result = startup_sync(logger=log)
         log.info(
-            "Catalog sync: updated=%d unchanged=%d offline=%s update_required=%s",
-            len(result.updated),
+            "Catalog sync: updated=%s unchanged=%d offline=%s update_required=%s",
+            result.updated,
             len(result.unchanged),
             result.offline,
             result.app_update_required,
@@ -207,7 +227,7 @@ class App:
         self._save_watcher_slot = 0  # character slot index to poll
         self._save_named_prev  = None  # previous poll's owned-item name set (for diffing)
         self._save_qty_prev    = None  # previous poll's stackable-item quantity dict (for diffing)
-        self._save_auto_collect_submitted = set()  # item keys already submitted from save reconciliation this run
+        self._save_auto_collect_submitted = {}  # item key -> last auto-collect submit time
         self._reward_bosses_synced = set()  # boss keys already server-marked from save-owned rewards
         self._active_game_id = None  # game_id of the currently active run, for SaveWatcher setup
         self._active_mode_id = None  # normalized mode_id ("vanilla"/"reforged") of the active run
@@ -236,6 +256,10 @@ class App:
         self._focus_hotkey_bridge.defeat_requested.connect(self._defeat_focused_boss)
 
         # Bridge for F8/F9/F10 hotkeys (fire on keyboard lib's thread) → main thread
+        self._run_action_hotkey_bridge = _RunActionHotkeyBridge()
+        self._run_action_hotkey_bridge.pause_requested.connect(self._toggle_paused_from_hotkey)
+        self._run_action_hotkey_bridge.end_run_requested.connect(self._on_end_run_clicked)
+
         self._death_hotkey_bridge = _DeathHotkeyBridge()
 
         # Bridge for run poller updates → main thread
@@ -377,7 +401,7 @@ class App:
         self._save_watcher    = None
         self._save_named_prev = None
         self._save_qty_prev   = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         if game_id == "elden_ring" and mode_id in ("vanilla", "reforged"):
             from gui.boss_tracker import _load_settings, _save_settings
             settings = _load_settings()
@@ -410,6 +434,9 @@ class App:
         def on_death():
             if self._run_ended:
                 log.info("DEATH ignored -- run has ended")
+                return
+            if self._is_run_paused():
+                log.info("DEATH ignored -- run is paused")
                 return
             boss = self._ql_sync.get_current_boss() if self._ql_sync else ""
             boss_key = self._ql_sync.get_current_boss_key() if self._ql_sync else ""
@@ -448,6 +475,9 @@ class App:
             if self._run_ended:
                 log.info("SUBTRACT DEATH ignored -- run has ended")
                 return
+            if self._is_run_paused():
+                log.info("SUBTRACT DEATH ignored -- run is paused")
+                return
             # Guard against double-fire: F10 hotkey and the UI Subtract
             # button both route here now, and could otherwise both land
             # within the same instant (e.g. hotkey + accidental click).
@@ -483,6 +513,9 @@ class App:
             if self._run_ended:
                 log.info("RESET ALL DEATHS ignored -- run has ended")
                 return
+            if self._is_run_paused():
+                log.info("RESET ALL DEATHS ignored -- run is paused")
+                return
             self._session.reset_total_deaths()
             self._deaths.reset()
             self._reset_live_save_reconciliation()
@@ -503,16 +536,31 @@ class App:
                 self._deaths.record_kill(tier=tier or ENEMY)
 
         def on_focus_hotkey():
+            if self._is_run_paused():
+                log.info("FOCUS ignored -- run is paused")
+                return
             # Fires on the `keyboard` lib's own thread -- emit a signal so
             # the actual dialog/widget work happens on the main Qt thread
             # (see _FocusHotkeyBridge docstring).
             self._focus_hotkey_bridge.focus_requested.emit()
 
         def on_unfocus_hotkey():
+            if self._is_run_paused():
+                log.info("UNFOCUS ignored -- run is paused")
+                return
             self._focus_hotkey_bridge.unfocus_requested.emit()
 
         def on_defeat_hotkey():
+            if self._is_run_paused():
+                log.info("DEFEAT BOSS ignored -- run is paused")
+                return
             self._focus_hotkey_bridge.defeat_requested.emit()
+
+        def on_pause_hotkey():
+            self._run_action_hotkey_bridge.pause_requested.emit()
+
+        def on_end_run_hotkey():
+            self._run_action_hotkey_bridge.end_run_requested.emit()
 
         # F8/F9/F10 fire on the `keyboard` lib's own thread too (see
         # _DeathHotkeyBridge docstring) -- these are what get passed to
@@ -557,6 +605,8 @@ class App:
             "focus":    saved.get("hotkey_focus",    "f4"),
             "unfocus":  saved.get("hotkey_unfocus",  "f5"),
             "defeat":   saved.get("hotkey_defeat",   "f11"),
+            "pause":    saved.get("hotkey_pause",    "f6"),
+            "end_run":  saved.get("hotkey_end_run",  "f7"),
         }
 
         self._detector = Detector(
@@ -567,6 +617,8 @@ class App:
             on_focus=on_focus_hotkey,
             on_unfocus=on_unfocus_hotkey,
             on_defeat=on_defeat_hotkey,
+            on_pause=on_pause_hotkey,
+            on_end_run=on_end_run_hotkey,
             hotkeys=hotkeys,
         )
         self._detector.start()
@@ -607,6 +659,8 @@ class App:
         self._tracker.mortality_tab.set_can_submit(bool(self._active_questlog_token))
         self._tracker.mortality_tab.set_submitted(self._run_submitted)
         self._tracker.mortality_tab.set_ended(self._run_ended)
+        if self._ql_sync:
+            self._tracker.mortality_tab.set_paused(self._ql_sync.is_paused())
 
         self._tracker.switch_run.connect(self._go_to_selector)
         # Route the UI's Add/Subtract/Reset buttons through the SAME handlers
@@ -628,6 +682,7 @@ class App:
         self._tracker.mortality_tab.sig_unfocus_boss.connect(on_unfocus_hotkey)
         self._tracker.mortality_tab.sig_end_run.connect(self._on_end_run_clicked)
         self._tracker.mortality_tab.sig_submit_leaderboard.connect(self._on_submit_leaderboard_clicked)
+        self._tracker.mortality_tab.sig_pause_toggled.connect(self._set_paused)
         self._tracker.settings_tab.hotkeys_changed.connect(self._detector.update_hotkeys)
         self._tracker.settings_tab.save_path_changed.connect(self._on_save_path_changed)
         self._tracker.settings_tab.login_requested.connect(self._do_login)
@@ -711,6 +766,24 @@ class App:
             self._selector_win.show()
         self._selector_win._widget._populate_runs()
 
+    def _is_run_paused(self):
+        return bool(self._ql_sync and self._ql_sync.is_paused())
+
+    def _set_paused(self, paused):
+        if not self._ql_sync or self._run_ended:
+            return
+        if self._tracker:
+            self._tracker.mortality_tab.set_paused(bool(paused))
+        if paused:
+            self._ql_sync.pause()
+        else:
+            self._ql_sync.resume()
+
+    def _toggle_paused_from_hotkey(self):
+        if not self._ql_sync or self._run_ended:
+            return
+        self._set_paused(not self._ql_sync.is_paused())
+
     def _stop_active(self):
         self._timer.stop()
         if self._ql_sync:
@@ -725,7 +798,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
         self._active_game_id   = None
         self._active_mode_id   = None
@@ -760,21 +833,39 @@ class App:
             if self._tracker:
                 boss_list = self._bosses.export()
                 if self._ql_sync:
-                    # Merge in per-boss death counts from the server's status
-                    # poll (self._bosses.export() is the LOCAL boss tracker --
-                    # defeated/tier/group only, no death counts; those live
-                    # server-side, keyed by boss_key).
-                    death_by_key = {b["key"]: int(b.get("deaths", 0) or 0) for b in self._ql_sync.get_bosses()}
-                    death_aliases = {
-                        "Alabaster Lord (East of the Church of the Plague)": (
-                            "Alabaster Lord (Caelid)",
-                        ),
+                    # Connected runs use QuestLog's status poll as the
+                    # authoritative boss state. Keep the merge keyed by
+                    # boss_key so bosses with shared names stay separate.
+                    server_bosses = {
+                        b.get("key"): b
+                        for b in self._ql_sync.get_bosses()
+                        if b.get("key")
                     }
                     for b in boss_list:
-                        deaths = death_by_key.get(b["key"], int(b.get("deaths", 0) or 0))
-                        for alias in death_aliases.get(b["key"], ()):
-                            deaths = max(deaths, death_by_key.get(alias, 0), int(b.get("deaths", 0) or 0))
-                        b["deaths"] = deaths
+                        server_boss = server_bosses.get(b["key"])
+                        if not server_boss:
+                            continue
+
+                        b["deaths"] = int(server_boss.get("deaths", b.get("deaths", 0)) or 0)
+                        if "defeated" in server_boss:
+                            b["defeated"] = _status_bool(server_boss.get("defeated"))
+                        elif "status" in server_boss:
+                            b["defeated"] = _status_bool(server_boss.get("status"))
+
+                        for field in ("name", "location", "region", "tier"):
+                            value = server_boss.get(field)
+                            if value:
+                                b[field] = value
+                        if b.get("region"):
+                            b["group"] = b["region"]
+
+                        local_boss = self._bosses.bosses.get(b["key"])
+                        if local_boss:
+                            local_boss["deaths"] = b["deaths"]
+                            local_boss["defeated"] = b["defeated"]
+                            for field in ("name", "location", "region", "tier", "group"):
+                                if b.get(field):
+                                    local_boss[field] = b[field]
                 self._tracker.refresh(
                     boss_list,
                     session=self._session,
@@ -873,7 +964,7 @@ class App:
             return entry.rsplit(" (", 1)[0] if isinstance(entry, str) and entry.endswith(")") else entry
 
         def _item_key(name):
-            return str(name or "").strip().casefold()
+            return _save_item_key(name)
 
         owned_by_lower = {
             _item_key(_bare_item_name(entry)): _bare_item_name(entry)
@@ -886,15 +977,23 @@ class App:
         uncollected_by_lower = {
             _item_key(it["name"]): it["name"] for it in items if not it["collected"]
         }
+        now = time.time()
+
+        def _recently_submitted(key, retry_after=10.0):
+            submitted_at = self._save_auto_collect_submitted.get(key)
+            return submitted_at is not None and now - submitted_at < retry_after
+
+        def _submit_collect(key, match, reason):
+            log.info("Live save tracking: auto-collecting %r %s", match, reason)
+            self._save_auto_collect_submitted[key] = now
+            backend.collect_item(match)
+            self._auto_mark_reward_boss(match)
 
         for item_key, match in list(uncollected_by_lower.items()):
-            if item_key in self._save_auto_collect_submitted:
+            if _recently_submitted(item_key):
                 continue
             if item_key in owned_by_lower:
-                log.info("Live save tracking: auto-collecting %r (already owned in save)", match)
-                self._save_auto_collect_submitted.add(item_key)
-                backend.collect_item(match)
-                self._auto_mark_reward_boss(match)
+                _submit_collect(item_key, match, "(already owned in save)")
                 uncollected_by_lower.pop(item_key, None)
 
         for entry in newly_named:
@@ -903,6 +1002,16 @@ class App:
             name = _bare_item_name(entry)
             if _item_key(name) in owned_by_lower:
                 log.debug("Live save tracking: newly detected owned item %r", name)
+
+        unmatched_owned = sorted(
+            _bare_item_name(entry)
+            for entry in named_snapshot
+            if _item_key(_bare_item_name(entry)) not in {
+                _item_key(it["name"]) for it in items
+            }
+        )
+        if unmatched_owned:
+            log.debug("Live save tracking: %d owned save items are not in this run checklist", len(unmatched_owned))
 
         # Quantity increases (stackable goods/key items) -- included for
         # parity with tools/live_save_diff.py's approach even though no
@@ -913,13 +1022,13 @@ class App:
         for name, qty in qty_snapshot.items():
             prev_qty = self._save_qty_prev.get(name, 0)
             if qty > prev_qty:
-                match = uncollected_by_lower.get(_item_key(name))
+                item_key = _item_key(name)
+                if _recently_submitted(item_key):
+                    continue
+                match = uncollected_by_lower.get(item_key)
                 if match:
-                    log.info("Live save tracking: auto-collecting %r (qty %d -> %d)", match, prev_qty, qty)
-                    self._save_auto_collect_submitted.add(_item_key(name))
-                    backend.collect_item(match)
-                    self._auto_mark_reward_boss(match)
-                    uncollected_by_lower.pop(_item_key(name), None)
+                    _submit_collect(item_key, match, f"(qty {prev_qty} -> {qty})")
+                    uncollected_by_lower.pop(item_key, None)
 
         self._save_named_prev = named_snapshot
         self._save_qty_prev   = qty_snapshot
@@ -981,6 +1090,7 @@ class App:
         from gui.boss_tracker import _load_settings, _save_settings
         active_runs = profile.get("active_runs", [])
         run_history = profile.get("run_history", [])
+        deleted_runs = profile.get("deleted_runs", [])
 
         # Save non-secret profile state only. QuestLogClient.login() stores the
         # listener key in the current Windows user's DPAPI-protected app data.
@@ -989,9 +1099,9 @@ class App:
         _save_settings(s)
 
         self._api = QuestLogClient(api_key, s.get("session_token", ""))
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
-        self._selector_win._widget.set_server_runs(active_runs, run_history)
+        self._selector_win._widget.set_server_runs(active_runs, run_history, deleted_runs)
 
         if self._tracker:
             self._tracker.settings_tab.login_succeeded.emit(api_key, username, active_runs)
@@ -1042,7 +1152,7 @@ class App:
                 token = runs[0]["token"]
 
         self._api = QuestLogClient(api_key, token)
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         if self._tracker:
             self._tracker._api = self._api
             self._tracker.build_planner_tab.set_api(self._api)
@@ -1117,7 +1227,7 @@ class App:
 
         if api_key and token:
             self._api = QuestLogClient(api_key, token)
-            self._selector_win._widget.build_planner_tab.set_api(self._api)
+            self._selector_win._widget.set_api(self._api)
             # Persist token so next launch auto-reconnects
             from gui.boss_tracker import _load_settings, _save_settings
             s = _load_settings()
@@ -1139,7 +1249,7 @@ class App:
             return
         log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
-        self._selector_win._widget.build_planner_tab.set_api(self._api)
+        self._selector_win._widget.set_api(self._api)
         self._selector_win._widget.set_logged_in(username)
         # Fetch runs immediately in background — no manual refresh needed
         self._refresh_server_runs(api_key)
@@ -1180,8 +1290,9 @@ class App:
                 profile = {}
             active_runs = profile.get("active_runs", [])
             run_history = profile.get("run_history", [])
+            deleted_runs = profile.get("deleted_runs", [])
             log.info("Server runs — active=%d history=%d", len(active_runs), len(run_history))
-            notifier.ready.emit(active_runs, run_history)
+            notifier.ready.emit(active_runs, run_history, deleted_runs)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -1220,7 +1331,7 @@ class App:
         self._save_watcher     = None
         self._save_named_prev  = None
         self._save_qty_prev    = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
         if not path or not os.path.isfile(path):
             return
@@ -1363,7 +1474,7 @@ class App:
         """Let live-save tracking re-check the current save after a full reset."""
         self._save_named_prev = None
         self._save_qty_prev = None
-        self._save_auto_collect_submitted = set()
+        self._save_auto_collect_submitted = {}
         self._reward_bosses_synced = set()
 
     def _set_total_deaths(self, value):
@@ -1430,6 +1541,8 @@ class App:
         """Main-thread handler: mirror web-side state changes (reset, undo) into local trackers."""
         if not (self._session and self._deaths):
             return
+        if "is_paused" in data and self._tracker:
+            self._tracker.mortality_tab.set_paused(bool(data.get("is_paused")))
         if data.get("reset"):
             self._session.reset_total_deaths()
             self._deaths.reset()
