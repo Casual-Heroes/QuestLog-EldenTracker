@@ -22,7 +22,7 @@ from core.paths import ROOT, data as _data_path
 
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.1a"
 SUPPORTED_API_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = {1}
 SUPPORTED_CALCULATION_CONTRACTS = {1}

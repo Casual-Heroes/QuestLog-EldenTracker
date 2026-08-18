@@ -36,6 +36,20 @@ TICK_MS      = 1000
 OVERLAY_PORT = 8765
 
 
+def _status_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "defeated", "complete", "completed"}:
+            return True
+        if text in {"0", "false", "no", "n", "alive", "incomplete", ""}:
+            return False
+    return bool(value)
+
+
 class _ServerRunsReady(QObject):
     ready = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
 
@@ -117,8 +131,8 @@ def _start_catalog_sync():
     try:
         result = startup_sync(logger=log)
         log.info(
-            "Catalog sync: updated=%d unchanged=%d offline=%s update_required=%s",
-            len(result.updated),
+            "Catalog sync: updated=%s unchanged=%d offline=%s update_required=%s",
+            result.updated,
             len(result.unchanged),
             result.offline,
             result.app_update_required,
@@ -819,21 +833,39 @@ class App:
             if self._tracker:
                 boss_list = self._bosses.export()
                 if self._ql_sync:
-                    # Merge in per-boss death counts from the server's status
-                    # poll (self._bosses.export() is the LOCAL boss tracker --
-                    # defeated/tier/group only, no death counts; those live
-                    # server-side, keyed by boss_key).
-                    death_by_key = {b["key"]: int(b.get("deaths", 0) or 0) for b in self._ql_sync.get_bosses()}
-                    death_aliases = {
-                        "Alabaster Lord (East of the Church of the Plague)": (
-                            "Alabaster Lord (Caelid)",
-                        ),
+                    # Connected runs use QuestLog's status poll as the
+                    # authoritative boss state. Keep the merge keyed by
+                    # boss_key so bosses with shared names stay separate.
+                    server_bosses = {
+                        b.get("key"): b
+                        for b in self._ql_sync.get_bosses()
+                        if b.get("key")
                     }
                     for b in boss_list:
-                        deaths = death_by_key.get(b["key"], int(b.get("deaths", 0) or 0))
-                        for alias in death_aliases.get(b["key"], ()):
-                            deaths = max(deaths, death_by_key.get(alias, 0), int(b.get("deaths", 0) or 0))
-                        b["deaths"] = deaths
+                        server_boss = server_bosses.get(b["key"])
+                        if not server_boss:
+                            continue
+
+                        b["deaths"] = int(server_boss.get("deaths", b.get("deaths", 0)) or 0)
+                        if "defeated" in server_boss:
+                            b["defeated"] = _status_bool(server_boss.get("defeated"))
+                        elif "status" in server_boss:
+                            b["defeated"] = _status_bool(server_boss.get("status"))
+
+                        for field in ("name", "location", "region", "tier"):
+                            value = server_boss.get(field)
+                            if value:
+                                b[field] = value
+                        if b.get("region"):
+                            b["group"] = b["region"]
+
+                        local_boss = self._bosses.bosses.get(b["key"])
+                        if local_boss:
+                            local_boss["deaths"] = b["deaths"]
+                            local_boss["defeated"] = b["defeated"]
+                            for field in ("name", "location", "region", "tier", "group"):
+                                if b.get(field):
+                                    local_boss[field] = b[field]
                 self._tracker.refresh(
                     boss_list,
                     session=self._session,

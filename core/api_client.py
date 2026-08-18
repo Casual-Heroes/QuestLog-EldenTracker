@@ -19,7 +19,7 @@ log = get_logger("questlog.api")
 BASE_URL        = "https://questlog.casual-heroes.com"
 AUTH_PORT       = 9457
 REQUEST_TIMEOUT = 5
-APP_VERSION     = "1.2.1"
+APP_VERSION     = "1.2.1a"
 STATE_RE        = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _LOGIN_LOCK     = threading.Lock()
 
