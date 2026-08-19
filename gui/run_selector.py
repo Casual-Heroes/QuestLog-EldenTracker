@@ -246,6 +246,7 @@ class NewRunPanel(QWidget):
         self.save_combo = QComboBox()
         self.save_combo.setToolTip("Pick the exact character slot EldenTracker should scan before starting or connecting a run.")
         _commit_combo_on_press(self.save_combo, self._on_save_selected)
+        self.save_combo.currentIndexChanged.connect(self._on_save_selected)
         refresh_save_btn = QPushButton("Reload Saves")
         refresh_save_btn.setToolTip("Reload Elden Ring character slots from your save files.")
         refresh_save_btn.setFixedHeight(34)
@@ -428,11 +429,13 @@ class NewRunPanel(QWidget):
         if not hasattr(self, "save_combo"):
             return
         previous_choice = self.save_combo.currentData() if prefer_current else None
+        self.save_combo.blockSignals(True)
         self.save_combo.clear()
         game_id = self.game_combo.currentData()
         if game_id != "elden_ring":
             self.save_combo.addItem("Manual item tracking only", None)
             self.save_combo.setEnabled(False)
+            self.save_combo.blockSignals(False)
             return
         self.save_combo.setEnabled(True)
         try:
@@ -480,6 +483,8 @@ class NewRunPanel(QWidget):
                 self.save_combo.setCurrentIndex(selected_index)
         except Exception:
             self.save_combo.addItem("Could not read Elden Ring saves - configure in Settings", None)
+        finally:
+            self.save_combo.blockSignals(False)
 
     def _select_saved_save_mode(self):
         try:
