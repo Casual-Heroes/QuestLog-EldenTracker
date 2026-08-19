@@ -129,6 +129,8 @@ def get_item_ids(slot: bytes) -> list:
 EQUIP_INVENTORY_COMMON_SLOTS = 0xA80
 EQUIP_INVENTORY_KEY_SLOTS = 0x180
 EQUIP_INVENTORY_ITEM_SIZE = 12  # ga_item_handle: u32, quantity: u32, inventory_index: u32
+_ARMOR_ITEM_ID_BASE = 0x10000000
+_TALISMAN_ITEM_ID_BASE = 0x20000000
 
 
 def _offset_to_held_inventory(slot: bytes) -> int:
@@ -156,6 +158,58 @@ def _offset_to_held_inventory(slot: bytes) -> int:
     offset += 116           # ChrAsm (29 x u32)
     offset += 88            # ChrAsm2 (22 x u32)
     return offset
+
+
+def _offset_to_chrasm(slot: bytes) -> int:
+    """
+    Returns the byte offset of ChrAsm, the equipped character assembly block.
+    This mirrors _offset_to_held_inventory's structure walk up to the point
+    where equipped gear is stored.
+    """
+    offset = 0
+    offset += 4 + 4 + 0x18  # ver(4) + map_id(4) + _0x18(24)
+
+    for _ in range(0x1400):
+        item_id = struct.unpack_from("<I", slot, offset + 4)[0]
+        offset += 8
+        if item_id != 0 and (item_id & 0xF0000000) == 0:
+            offset += 13
+        elif item_id != 0 and (item_id & 0xF0000000) == 0x10000000:
+            offset += 8
+
+    offset += 432          # PlayerGameData
+    offset += 0xD0          # _0xd0
+    offset += 88            # EquipData (22 x u32)
+    return offset
+
+
+def _equip_raw_to_item_id(raw_id: int, base: int) -> str | None:
+    if raw_id in (0, 0xFFFFFFFF):
+        return None
+    return f"{(raw_id & 0x0FFFFFFF) | base:08X}"
+
+
+def get_equipped_item_ids(slot: bytes) -> list:
+    """
+    Return equipped armor and talisman item IDs from ChrAsm.
+
+    The acquired-item scan can miss starter gear that begins equipped.
+    ChrAsm stores equipped armor as raw IDs at indices 19-22 and talismans
+    as raw IDs at indices 24-27; add the same category bases used by the
+    inventory catalogs before resolving them by name.
+    """
+    offset = _offset_to_chrasm(slot)
+    values = struct.unpack_from("<29I", slot, offset)
+    ids = []
+    for idx in range(19, 23):
+        item_id = _equip_raw_to_item_id(values[idx], _ARMOR_ITEM_ID_BASE)
+        if item_id:
+            ids.append(item_id)
+    for idx in range(24, 28):
+        item_id = _equip_raw_to_item_id(values[idx], _TALISMAN_ITEM_ID_BASE)
+        if item_id:
+            ids.append(item_id)
+    return ids
 
 
 @dataclass

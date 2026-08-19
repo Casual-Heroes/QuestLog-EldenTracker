@@ -18,8 +18,11 @@ def setup():
 
     os.makedirs(_BASE_DIR, exist_ok=True)
 
+    if _LOG_FILE:
+        return
+
     stamp    = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    _LOG_FILE = os.path.join(_BASE_DIR, f"session_{stamp}.log")
+    _LOG_FILE = os.path.join(_BASE_DIR, f"session_{stamp}_{os.getpid()}.log")
 
     fmt = logging.Formatter(
         "%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -36,6 +39,12 @@ def setup():
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
     root.addHandler(fh)
     root.addHandler(sh)
 

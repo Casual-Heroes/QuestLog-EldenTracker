@@ -25,6 +25,7 @@ import tempfile
 
 from core.save_parser import (
     SaveParseError, parse_save_bytes, get_slot, get_inventory_items,
+    get_equipped_item_ids,
 )
 from core.save_data import SaveDataTables, resolve_slot
 from core.err_debug_tool_data import get_lookup as get_err_lookup
@@ -40,6 +41,17 @@ _ERR_ITEM_ID_OVERRIDES = {
     # resolves it as Erdsteel Dagger, which prevents ERR checklist items from
     # reconciling against the player's actual inventory screen.
     "00118C30": ("ERR: Weapons", "Brass Dagger"),
+}
+
+_ERR_ITEM_ID_ALIASES = {
+    # Reforged can start the Perfumer class with the Traveler/Traveling
+    # Perfumer armor IDs while QuestLog build checklists may contain the
+    # standard Perfumer set names. Treat these as owned aliases for live-save
+    # reconciliation only; the underlying save/catalog names are left intact.
+    "100186A0": (("armor", "Perfumer Hood"),),
+    "10018704": (("armor", "Perfumer Robe"),),
+    "10018768": (("armor", "Perfumer Gloves"),),
+    "100187CC": (("armor", "Perfumer Sarong"),),
 }
 
 
@@ -72,13 +84,14 @@ def read_slot(path: str, slot_index: int):
 
 class SaveWatcher:
     """
-    Polls a live Elden Ring save file and resolves it into the same named
-    owned-item view tools/live_save_diff.py's _named_snapshot()/
-    _quantity_snapshot() already compute -- vanilla catalog checked first
-    (SaveDataTables/resolve_slot), ERR-exclusive items (Fortunes, added
-    weapons, etc. -- not in the vanilla catalog) resolved as a fallback
-    layer for anything vanilla left unresolved, exactly mirroring that
-    script's approach so nothing is dropped or simplified in the port.
+Polls a live Elden Ring save file and resolves it into the same named
+owned-item view tools/live_save_diff.py's _named_snapshot()/
+_quantity_snapshot() already compute -- vanilla catalog checked first
+(SaveDataTables/resolve_slot), ERR-exclusive items (Fortunes, added
+weapons, etc. -- not in the vanilla catalog) resolved as a fallback
+layer for anything vanilla left unresolved. The app also reconciles
+currently equipped armor/talismans from ChrAsm so starter gear that begins
+equipped is treated as owned.
     """
 
     #: Item categories only -- bosses/graces/cookbooks/bell_bearings/
@@ -111,7 +124,24 @@ class SaveWatcher:
                 pass
         return [{"index": s.index, "name": s.name} for s in parse_save_bytes(data)]
 
-    def _named_snapshot(self, slot) -> set:
+    def _catalog_entry_for_item_id(self, item_id):
+        for category_name, category_items in self._tables.categories.items():
+            info = category_items.get(item_id)
+            if info and category_name in self._ITEM_CATEGORIES:
+                return category_name, info["name"]
+
+        match = self._live_lookup.get(item_id)
+        if match:
+            return match
+
+        if self._err_lookup:
+            match = self._err_lookup.get(item_id)
+            if match:
+                return match
+
+        return None
+
+    def _named_snapshot(self, slot, slot_bytes=None) -> set:
         """
         Resolve a slot into the same named owned/not-owned view
         tools/live_save_diff.py's _named_snapshot() computes, restricted to
@@ -128,6 +158,15 @@ class SaveWatcher:
         for category in self._ITEM_CATEGORIES:
             names = result.owned_items.get(category, [])
             owned |= {f"{name} ({category})" for name in names}
+
+        equipped_item_ids = set(get_equipped_item_ids(slot_bytes)) if slot_bytes is not None else set()
+
+        if slot_bytes is not None:
+            for item_id in equipped_item_ids:
+                match = self._catalog_entry_for_item_id(item_id)
+                if match:
+                    category, name = match
+                    owned.add(f"{name} ({category})")
 
         for item_id in result.unresolved_item_ids:
             match = self._live_lookup.get(item_id)
@@ -153,6 +192,10 @@ class SaveWatcher:
                         if vanilla_item and category_name in self._ITEM_CATEGORIES:
                             owned.discard(f"{vanilla_item['name']} ({category_name})")
                     category, name = match
+                    owned.add(f"{name} ({category})")
+
+            for item_id in set(slot.item_ids) | equipped_item_ids:
+                for category, name in _ERR_ITEM_ID_ALIASES.get(item_id, ()):
                     owned.add(f"{name} ({category})")
 
         return owned
@@ -211,4 +254,4 @@ class SaveWatcher:
         slot, slot_bytes = read_slot(self.save_path, slot_index)
         if slot is None:
             return set(), {}
-        return self._named_snapshot(slot), self._quantity_snapshot(slot_bytes)
+        return self._named_snapshot(slot, slot_bytes), self._quantity_snapshot(slot_bytes)

@@ -407,8 +407,23 @@ class App:
             settings = _load_settings()
             tracker_settings = dict(settings)
             for key in ("save_file_path", "save_slot", "save_character_name"):
-                if key in meta:
+                if key in meta and tracker_settings.get(key) in ("", None):
                     tracker_settings[key] = meta[key]
+            selected_save_meta = {
+                key: tracker_settings[key]
+                for key in ("save_file_path", "save_slot", "save_character_name")
+                if tracker_settings.get(key) not in ("", None)
+            }
+            if selected_save_meta and any(meta.get(key) != value for key, value in selected_save_meta.items()):
+                try:
+                    update_run_meta(slug, selected_save_meta)
+                    log.info(
+                        "Updated run save tracking: slot_index=%s character=%r",
+                        selected_save_meta.get("save_slot"),
+                        selected_save_meta.get("save_character_name", ""),
+                    )
+                except Exception:
+                    log.exception("Failed to update save tracking metadata for run '%s'", slug)
             save_path = tracker_settings.get("save_file_path", "")
             if not save_path:
                 from core.save_paths import find_save_file_for_mode
@@ -424,8 +439,14 @@ class App:
                 try:
                     self._save_watcher = SaveWatcher(save_path, mode=mode_id)
                     self._save_watcher_slot = self._resolve_save_slot(tracker_settings)
-                    log.info("Live save tracking enabled: %s (mode=%s slot_index=%d game_slot=%d)",
-                             save_path, mode_id, self._save_watcher_slot, self._save_watcher_slot + 1)
+                    log.info(
+                        "Live save tracking enabled: %s (mode=%s slot_index=%d game_slot=%d character=%r)",
+                        save_path,
+                        mode_id,
+                        self._save_watcher_slot,
+                        self._save_watcher_slot + 1,
+                        tracker_settings.get("save_character_name", ""),
+                    )
                 except Exception:
                     log.exception("Failed to start SaveWatcher for %r", save_path)
                     self._save_watcher = None
