@@ -31,7 +31,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 UPDATE_URL  = SITE_URL + "/soulslike/"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.1c"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -1074,7 +1074,12 @@ class MortalityTab(QWidget):
         if ql_sync:
             self.set_paused(ql_sync.is_paused())
 
-        self._session_card._value_lbl.setText(str(session.session_deaths))
+        connected_session_deaths = (
+            ql_sync.session_deaths()
+            if ql_sync and ql_sync.has_status_snapshot()
+            else session.session_deaths
+        )
+        self._session_card._value_lbl.setText(str(connected_session_deaths))
         if ql_sync:
             self._session_card2._value_lbl.setText(_clock_display(ql_sync.session_time_sec()))
         else:
@@ -1103,10 +1108,12 @@ class MortalityTab(QWidget):
             self._non_boss_deaths_card._value_lbl.setText(str(non_boss_deaths))
 
             session_dph, run_dph = ql_sync.get_deaths_per_hour()
+            if connected_session_deaths <= 0:
+                session_dph = None
             if session_dph is None:
                 session_sec = ql_sync.session_time_sec()
-                if session_sec > 0:
-                    session_dph = session.session_deaths / (session_sec / 3600)
+                if connected_session_deaths > 0 and session_sec > 0:
+                    session_dph = connected_session_deaths / (session_sec / 3600)
             self._session_dph_card._value_lbl.setText(
                 f"{session_dph:.1f}" if session_dph is not None else "--"
             )
@@ -1131,7 +1138,11 @@ class MortalityTab(QWidget):
         else:
             self._total_card._value_lbl.setText(str(session.total_deaths))
             session_sec = session.elapsed_seconds()
-            session_dph = session.session_deaths / (session_sec / 3600) if session_sec > 0 else None
+            session_dph = (
+                session.session_deaths / (session_sec / 3600)
+                if session.session_deaths > 0 and session_sec > 0
+                else None
+            )
             self._session_dph_card._value_lbl.setText(
                 f"{session_dph:.1f}" if session_dph is not None else "--"
             )

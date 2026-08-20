@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.2.1b"
+APP_VERSION = "1.2.1c"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -286,7 +286,10 @@ class QuestLogSync:
                     or data.get("longest_life_fmt")
                 )
                 if longest_life is not None:
-                    self._longest_life = max(float(longest_life), float(self._longest_life or 0))
+                    # QuestLog-connected runs must trust the server snapshot.
+                    # Using max() here lets a stale local 12h safety cap stick
+                    # forever even after the site reports the real value.
+                    self._longest_life = float(longest_life)
                 # Both null (not 0) from the server until their respective
                 # played-time clock passes 600s -- preserved as None here,
                 # NOT defaulted to 0, so the UI can tell "no data yet" apart
@@ -519,7 +522,9 @@ class QuestLogSync:
                     timeout=5,
                 )
             elif r.content:
-                self._apply_death_count_status(r.json())
+                status = self._apply_death_count_status(r.json())
+                if status and self._on_server_sync:
+                    self._on_server_sync(status)
             log.debug("Heartbeat OK session=%d streak=%d longest=%d survival=%d",
                       payload["session_sec"], payload["streak_sec"],
                       payload["longest_sec"], payload["survival_sec"])
@@ -550,7 +555,9 @@ class QuestLogSync:
                     timeout=5,
                 )
             elif r.content:
-                self._apply_death_count_status(r.json())
+                status = self._apply_death_count_status(r.json())
+                if status and self._on_server_sync:
+                    self._on_server_sync(status)
             log.info("Timer push OK session=%d streak=%d deaths=%d session_deaths=%d boss_key=%r",
                      payload["session_sec"], payload["streak_sec"],
                      payload["deaths"], payload["session_deaths"],
@@ -563,7 +570,7 @@ class QuestLogSync:
     def _timer_payload(self, game_running=True, streak_override=None, survival_override=None):
         with self._lock:
             session_sec    = int(self._session_sec)
-            longest_life   = int(self._longest_life)
+            stored_longest = int(self._longest_life)
             total_surv     = self._total_survival_sec
             life_start     = self._life_start_ts
             deaths         = int(self._local_deaths)
@@ -573,13 +580,18 @@ class QuestLogSync:
         now = time.time()
         raw_streak = int(now - life_start) if life_start else 0
         raw_survival = int(total_surv + (now - life_start if life_start else 0))
+        current_life = min(raw_streak, self._MAX_LIFE_SEC)
+        longest_life = max(stored_longest, current_life)
+        if longest_life > stored_longest:
+            with self._lock:
+                self._longest_life = float(longest_life)
         return {
             "game_running": game_running,
             "session_sec": session_sec,
             "streak_sec": (
                 int(streak_override)
                 if streak_override is not None
-                else min(raw_streak, self._MAX_LIFE_SEC)
+                else current_life
             ),
             "longest_sec": longest_life,
             "survival_sec": (
@@ -651,6 +663,10 @@ class QuestLogSync:
         """Returns (boss_deaths_total, non_boss_deaths_total)."""
         with self._lock:
             return self._boss_deaths_total, self._non_boss_deaths_total
+
+    def session_deaths(self):
+        with self._lock:
+            return max(0, int(self._local_session_deaths))
 
     def has_status_snapshot(self):
         """True after a server status/death response has initialized counters."""
@@ -844,6 +860,8 @@ class QuestLogSync:
                 self._status_snapshot_ready = True
             if "session_deaths" in status:
                 self._local_session_deaths = max(0, int(status.get("session_deaths") or 0))
+                if self._local_session_deaths == 0:
+                    self._session_deaths_per_hour = None
             if "boss_deaths_total" in status:
                 self._boss_deaths_total = max(0, int(status.get("boss_deaths_total") or 0))
             if "non_boss_deaths_total" in status:
@@ -878,6 +896,8 @@ class QuestLogSync:
                 "session_deaths_per_hour",
                 self._session_deaths_per_hour,
             )
+            if self._local_session_deaths == 0:
+                self._session_deaths_per_hour = None
             self._run_deaths_per_hour = status.get(
                 "run_deaths_per_hour",
                 self._run_deaths_per_hour,
@@ -896,7 +916,10 @@ class QuestLogSync:
                 or status.get("longest_life_fmt")
             )
             if longest_life is not None:
-                self._longest_life = max(self._longest_life, float(longest_life))
+                # Death/status responses are authoritative for connected runs.
+                # Do not preserve a larger local value; it may be the old 12h
+                # stale-timestamp cap rather than the real longest life.
+                self._longest_life = float(longest_life)
             if "total_survival" in status:
                 self._total_survival_sec = float(status.get("total_survival") or 0)
             if "current_life_sec" in status:
