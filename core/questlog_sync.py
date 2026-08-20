@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.2.1b"
+APP_VERSION = "1.2.1c"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -286,7 +286,10 @@ class QuestLogSync:
                     or data.get("longest_life_fmt")
                 )
                 if longest_life is not None:
-                    self._longest_life = max(float(longest_life), float(self._longest_life or 0))
+                    # QuestLog-connected runs must trust the server snapshot.
+                    # Using max() here lets a stale local 12h safety cap stick
+                    # forever even after the site reports the real value.
+                    self._longest_life = float(longest_life)
                 # Both null (not 0) from the server until their respective
                 # played-time clock passes 600s -- preserved as None here,
                 # NOT defaulted to 0, so the UI can tell "no data yet" apart
@@ -896,7 +899,10 @@ class QuestLogSync:
                 or status.get("longest_life_fmt")
             )
             if longest_life is not None:
-                self._longest_life = max(self._longest_life, float(longest_life))
+                # Death/status responses are authoritative for connected runs.
+                # Do not preserve a larger local value; it may be the old 12h
+                # stale-timestamp cap rather than the real longest life.
+                self._longest_life = float(longest_life)
             if "total_survival" in status:
                 self._total_survival_sec = float(status.get("total_survival") or 0)
             if "current_life_sec" in status:
