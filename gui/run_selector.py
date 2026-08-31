@@ -27,6 +27,7 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL   = "https://questlog.casual-heroes.com"
 GITHUB_URL = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 UPDATE_URL = SITE_URL + "/soulslike/"
+FEEDBACK_URL = SITE_URL + "/feedback/"
 
 from core.run import list_runs, create_run, delete_run, load_run_meta, update_run_meta
 from games.registry import list_games
@@ -803,6 +804,13 @@ class RunSelectorWidget(QWidget):
         site_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         site_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SITE_URL + "/soulslike/")))
         h_layout.addWidget(site_btn)
+
+        feedback_btn = QPushButton("Feedback")
+        feedback_btn.setToolTip("Send EldenTracker feedback")
+        feedback_btn.setStyleSheet(_btn_style)
+        feedback_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        feedback_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
+        h_layout.addWidget(feedback_btn)
 
         github_btn = QPushButton("GitHub")
         github_btn.setStyleSheet(_btn_style)

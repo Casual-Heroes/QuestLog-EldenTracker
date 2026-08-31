@@ -9,6 +9,9 @@ behavior, and do not reintroduce the old local fallback behavior.
 - Do not merge it with local state using `max(existing, server)`.
 - A stale local life cap can show as `12:00:00`; server status such as
   `longest_life_sec=2300` must replace that value and display `00:38:20`.
+- Server status with exactly `longest_life_sec=43200` is the known stale
+  12-hour cap sentinel from older builds. The app must not accept or resend it
+  unless the current live streak is actually at that cap.
 - Timer payloads must promote the current live streak into `longest_sec`
   before heartbeat/death posts. Pressing F9 after a long life must send the
   just-ended life as the new `Longest Life`, even though `streak_sec` is reset

@@ -31,7 +31,8 @@ def _load_pixmap(*paths: str) -> QPixmap:
 SITE_URL    = "https://questlog.casual-heroes.com"
 GITHUB_URL  = "https://github.com/Casual-Heroes/QuestLog-EldenTracker"
 UPDATE_URL  = SITE_URL + "/soulslike/"
-APP_VERSION = "1.2.1c"
+FEEDBACK_URL = SITE_URL + "/feedback/"
+APP_VERSION = "1.2.1d"
 
 SETTINGS_FILE = _data_path("settings.json")
 
@@ -2382,6 +2383,20 @@ class BossTrackerWindow(QMainWindow):
         """)
         github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL)))
 
+        feedback_btn = QPushButton("Feedback")
+        feedback_btn.setFixedHeight(30)
+        feedback_btn.setToolTip("Send EldenTracker feedback")
+        feedback_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        feedback_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {BORDER_SOLID};
+                border-radius: 6px; color: {TEXT_DIM};
+                padding: 0 12px; font-size: 10px; letter-spacing: 0.5px;
+            }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; color: {ACCENT_GOLD}; }}
+        """)
+        feedback_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
+
         settings_btn = QPushButton("Settings")
         settings_btn.setFixedHeight(30)
         settings_btn.setToolTip("Settings")
@@ -2420,6 +2435,8 @@ class BossTrackerWindow(QMainWindow):
         h_layout.addWidget(settings_btn)
         h_layout.addSpacing(8)
         h_layout.addWidget(site_btn)
+        h_layout.addSpacing(4)
+        h_layout.addWidget(feedback_btn)
         h_layout.addSpacing(4)
         h_layout.addWidget(github_btn)
         root.addWidget(header)

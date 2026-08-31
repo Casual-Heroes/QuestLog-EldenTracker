@@ -18,7 +18,7 @@ from core.catalog_sync import CatalogStore
 log = get_logger("questlog.sync")
 
 BASE_URL = "https://questlog.casual-heroes.com"
-APP_VERSION = "1.2.1c"
+APP_VERSION = "1.2.1d"
 
 # ── Game process registry ─────────────────────────────────────────────────────
 # Add new games here. Key = game_id used by the API, value = set of exe names
@@ -35,6 +35,8 @@ _ALL_GAME_EXES = {exe for exes in GAME_PROCESSES.values() for exe in exes}
 _BOSS_KEY_ALIASES = {
     "Alabaster Lord (Caelid)": "Alabaster Lord (East of the Church of the Plague)",
 }
+
+_STALE_LONGEST_LIFE_CAP_SEC = 12 * 60 * 60
 
 
 def _normalize_boss_key(boss_key):
@@ -289,7 +291,7 @@ class QuestLogSync:
                     # QuestLog-connected runs must trust the server snapshot.
                     # Using max() here lets a stale local 12h safety cap stick
                     # forever even after the site reports the real value.
-                    self._longest_life = float(longest_life)
+                    self._longest_life = self._server_longest_life_value(longest_life)
                 # Both null (not 0) from the server until their respective
                 # played-time clock passes 600s -- preserved as None here,
                 # NOT defaulted to 0, so the UI can tell "no data yet" apart
@@ -750,7 +752,33 @@ class QuestLogSync:
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
-    _MAX_LIFE_SEC = 43200  # 12h sanity cap — guards against stale timestamps
+    _MAX_LIFE_SEC = _STALE_LONGEST_LIFE_CAP_SEC  # 12h sanity cap -- guards against stale timestamps
+
+    def _server_longest_life_value(self, longest_life):
+        """Return a server longest-life value that is safe to store/display.
+
+        Older app builds could push the 12h safety cap as if it were a real
+        life. If QuestLog still has that exact sentinel in the DB, accepting it
+        here reintroduces the visible 12:00:00 bug and causes future heartbeats
+        to resend it. A real 12h+ current life is still allowed through the
+        live timer promotion path.
+        """
+        value = float(longest_life)
+        if int(value) != _STALE_LONGEST_LIFE_CAP_SEC:
+            return value
+        current_life = 0
+        if self._game_active and self._life_start_ts:
+            current_life = int(time.time() - self._life_start_ts)
+        if current_life >= _STALE_LONGEST_LIFE_CAP_SEC:
+            return value
+        previous = float(self._longest_life or 0)
+        replacement = 0.0 if int(previous) == _STALE_LONGEST_LIFE_CAP_SEC else previous
+        log.warning(
+            "Ignoring stale server longest_life cap=%d; keeping %.0f",
+            _STALE_LONGEST_LIFE_CAP_SEC,
+            replacement,
+        )
+        return replacement
 
     def pause(self):
         self._apply_pause_status({"is_paused": True, "session_state": "paused"})
@@ -919,7 +947,7 @@ class QuestLogSync:
                 # Death/status responses are authoritative for connected runs.
                 # Do not preserve a larger local value; it may be the old 12h
                 # stale-timestamp cap rather than the real longest life.
-                self._longest_life = float(longest_life)
+                self._longest_life = self._server_longest_life_value(longest_life)
             if "total_survival" in status:
                 self._total_survival_sec = float(status.get("total_survival") or 0)
             if "current_life_sec" in status:

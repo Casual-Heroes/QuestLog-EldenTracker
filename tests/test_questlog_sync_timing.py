@@ -14,6 +14,31 @@ def test_connected_status_replaces_stale_longest_life_cap():
     assert sync.longest_life_sec() == 38 * 60 + 20
 
 
+def test_connected_status_ignores_server_stale_twelve_hour_cap():
+    sync = QuestLogSync("token", api_key="key")
+
+    sync._apply_death_count_status({
+        "total_deaths": 10,
+        "session_deaths": 1,
+        "longest_life_sec": 12 * 60 * 60,
+    })
+
+    assert sync.longest_life_sec() == 0
+
+
+def test_connected_status_keeps_previous_real_longest_when_server_sends_stale_cap():
+    sync = QuestLogSync("token", api_key="key")
+    sync._longest_life = 93
+
+    sync._apply_death_count_status({
+        "total_deaths": 10,
+        "session_deaths": 1,
+        "longest_life_sec": 12 * 60 * 60,
+    })
+
+    assert sync.longest_life_sec() == 93
+
+
 def test_timer_payload_promotes_current_life_to_longest_before_death(monkeypatch):
     sync = QuestLogSync("token", api_key="key")
     sync._longest_life = 93
