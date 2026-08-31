@@ -80,3 +80,23 @@ def test_connected_session_deaths_restored_from_status_snapshot():
 
     assert sync.has_status_snapshot()
     assert sync.session_deaths() == 1
+
+
+def test_resume_restores_life_clock_when_game_still_running(monkeypatch):
+    sync = QuestLogSync("token", api_key="key")
+    sync._game_active = True
+    sync._life_start_ts = 100.0
+    monkeypatch.setattr("core.questlog_sync.threading.Thread", lambda *a, **k: type("NoopThread", (), {"start": lambda self: None})())
+
+    monkeypatch.setattr("core.questlog_sync.time.time", lambda: 130.0)
+    sync.pause()
+
+    assert sync.is_paused()
+    assert sync.current_streak_sec() == 30
+
+    monkeypatch.setattr("core.questlog_sync.time.time", lambda: 160.0)
+    sync.resume()
+
+    assert not sync.is_paused()
+    assert sync._life_start_ts == 130.0
+    assert sync.current_streak_sec() == 30

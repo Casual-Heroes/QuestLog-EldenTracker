@@ -31,6 +31,13 @@ DEFAULT_TIMEOUT_SECONDS = 5
 _WRITE_LOCKS = {}
 _WRITE_LOCKS_GUARD = threading.Lock()
 
+SUPPORTED_DATASETS = {
+    "bosses_err",
+    "bosses_vanilla",
+    "err_calculations",
+    "vanilla_calculations",
+}
+
 STARTUP_LIVE_RESOURCES = {
     "classes_vanilla",
     "weapons_vanilla",
@@ -301,6 +308,9 @@ class CatalogStore:
 
             installed = state.setdefault("datasets", {})
             for name, metadata in manifest["datasets"].items():
+                if name not in SUPPORTED_DATASETS:
+                    result.unchanged.append(name)
+                    continue
                 if not isinstance(metadata, dict):
                     result.warnings.append(f"{name}: invalid manifest entry")
                     continue

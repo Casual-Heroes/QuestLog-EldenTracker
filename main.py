@@ -52,6 +52,8 @@ def _status_bool(value):
 
 class _ServerRunsReady(QObject):
     ready = pyqtSignal(list, list, list)  # active_runs, run_history, deleted_runs
+    auth_invalid = pyqtSignal()
+    login_valid = pyqtSignal(str, str, str)  # api_key, username, session_token
 
 class _LoginReady(QObject):
     success = pyqtSignal(str, str, dict)  # api_key, username, profile
@@ -265,6 +267,11 @@ class App:
         # Bridge for run poller updates → main thread
         self._run_poll_bridge = _RunPollReady()
         self._run_poll_bridge.updated.connect(self._selector_win._widget.set_server_runs)
+
+        self._server_runs_ready = _ServerRunsReady()
+        self._server_runs_ready.ready.connect(self._selector_win._widget.set_server_runs)
+        self._server_runs_ready.auth_invalid.connect(self._handle_invalid_login)
+        self._server_runs_ready.login_valid.connect(self._handle_restored_login_valid)
 
         # Bridge for submit_to_leaderboard's response (fires on a bg thread) → main thread
         self._leaderboard_submit_bridge = _LeaderboardSubmitReady()
@@ -1152,17 +1159,16 @@ class App:
     def _on_login_succeeded(self, api_key, username, runs):
         from core.api_client import QuestLogClient
 
-        # Match the active run to the currently open local run by game/mode
+        # Only restore cloud sync for the exact run already linked locally.
+        # Never guess by game/mode; multiple Reforged runs can coexist.
         token = ""
         if runs and self._session:
-            meta = load_run_meta(self._run_dir.split("\\")[-1]) if self._run_dir else {}
-            game_id = meta.get("game_id", "")
-            mode_id = meta.get("mode_id", "")
-            for r in runs:
-                rg = r.get("game", "")
-                rm = r.get("game_mode", "")
-                # match elden_ring + vanilla/err
-                if game_id in rg or rg in game_id:
+            meta = load_run_meta(self._active_slug) if self._active_slug else {}
+            existing_token = meta.get("questlog_token", "")
+            if existing_token and existing_token != "__local__":
+                for r in runs:
+                    if r.get("token") != existing_token:
+                        continue
                     token = r["token"]
                     # Sync defeated bosses from server state
                     if self._bosses and r.get("defeated_bosses"):
@@ -1170,7 +1176,7 @@ class App:
                             self._bosses.mark_defeated(key)
                     break
             if not token and runs:
-                token = runs[0]["token"]
+                log.info("Login did not auto-attach a QuestLog run; no exact current-run match was found")
 
         self._api = QuestLogClient(api_key, token)
         self._selector_win._widget.set_api(self._api)
@@ -1179,12 +1185,16 @@ class App:
             self._tracker.build_planner_tab.set_api(self._api)
             for tab in self._tracker._boss_tabs.values():
                 tab._api = self._api
-        self._selector_win._widget.set_logged_in(username)
+        from gui.boss_tracker import _load_settings, _save_settings
         if token:
-            from gui.boss_tracker import _load_settings, _save_settings
             s = _load_settings()
             s["session_token"] = token
             _save_settings(s)
+        else:
+            s = _load_settings()
+            if s.get("session_token"):
+                s["session_token"] = ""
+                _save_settings(s)
         log.info("Logged in as %r (token=%s) — cloud sync active", username, token[:8] if token else "none")
 
     def _on_server_run_connect(self, server_run):
@@ -1210,14 +1220,58 @@ class App:
             if key in settings and settings.get(key) not in ("", None):
                 save_meta[key] = settings[key]
 
-        # Find existing local stub that was created for this exact server token,
-        # or always create a fresh one — never reuse a different run's data.
+        created_from_app = bool(server_run.get("_created_from_app"))
+        # Find existing local stub that was created for this exact server token.
+        # Explicit Connect reuses it. A brand-new create response must not come
+        # back with a token we already know locally; that would attach old data.
         slug = None
         for meta in list_runs():
             if meta.get("questlog_token") == token:
                 slug = meta["slug"]
                 log.info("Reusing local stub '%s' for server run %s", slug, token[:8])
                 break
+
+        if created_from_app and slug is not None:
+            log.error(
+                "New QuestLog run returned an existing token=%s local_slug=%s; refusing old-session attach",
+                token[:8],
+                slug,
+            )
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self._selector_win,
+                    "Create Run Returned Old Session",
+                    "QuestLog returned a run token already stored locally. EldenTracker stopped "
+                    "instead of loading old session data. Refresh runs, then try Create Run again.",
+                )
+            except Exception:
+                pass
+            return
+
+        if created_from_app and token:
+            known_server_tokens = set()
+            try:
+                selector = self._selector_win._widget
+                for run in list(getattr(selector, "_server_active", []) or []) + list(getattr(selector, "_server_history", []) or []):
+                    known_token = run.get("token") or run.get("session_token") or run.get("run_token")
+                    if known_token:
+                        known_server_tokens.add(known_token)
+            except Exception:
+                known_server_tokens = set()
+            if token in known_server_tokens:
+                log.error("New QuestLog run returned an already-listed server token=%s; refusing old-session attach", token[:8])
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(
+                        self._selector_win,
+                        "Create Run Returned Existing Session",
+                        "QuestLog returned an existing run instead of a new one. EldenTracker stopped "
+                        "instead of loading old session data. Press Refresh and try again.",
+                    )
+                except Exception:
+                    pass
+                return
 
         if slug is None:
             slug = create_run(
@@ -1266,16 +1320,26 @@ class App:
         api_key  = saved.get("api_key", "")
         username = saved.get("username", "")
         token    = saved.get("session_token", "")
+        credential_error = saved.get("_credential_error", "")
+        if credential_error:
+            log.warning("QuestLog login not restored: %s", credential_error)
+            self._selector_win._widget.set_logged_out()
+            return
         if not api_key or not username:
+            if token:
+                from gui.boss_tracker import _save_settings
+                saved["session_token"] = ""
+                _save_settings(saved)
+                log.info("Cleared stale QuestLog session token because no API key is available")
+            self._selector_win._widget.set_logged_out()
             return
         log.info("Auto-restoring session for %r (token=%s)", username, token[:8] if token else "none")
         self._api = QuestLogClient(api_key, token)
-        self._selector_win._widget.set_api(self._api)
-        self._selector_win._widget.set_logged_in(username)
+        self._pending_restore_api_key = api_key
         # Fetch runs immediately in background — no manual refresh needed
-        self._refresh_server_runs(api_key)
+        self._refresh_server_runs(api_key, username=username, session_token=token)
 
-    def _refresh_server_runs(self, api_key=None, username=None):
+    def _refresh_server_runs(self, api_key=None, username=None, session_token=None):
         """Fetch profile from server and update the selector's server runs section."""
         import requests
         from core.api_client import APP_VERSION, BASE_URL, REQUEST_TIMEOUT
@@ -1286,12 +1350,13 @@ class App:
                 from gui.boss_tracker import _load_settings
                 api_key = _load_settings().get("api_key", "")
         if not api_key:
+            log.info("Skipping server run refresh: no QuestLog API key available")
+            self._selector_win._widget.set_logged_out()
             return
 
         self._selector_win._widget.set_server_runs_loading()
 
-        notifier = _ServerRunsReady()
-        notifier.ready.connect(self._selector_win._widget.set_server_runs)
+        notifier = self._server_runs_ready
 
         def _fetch():
             try:
@@ -1306,6 +1371,12 @@ class App:
                 )
                 log.info("Profile API status=%d", r.status_code)
                 profile = r.json() if r.ok else {}
+                if r.status_code == 401:
+                    log.warning("QuestLog API key rejected during profile refresh; clearing login state")
+                    notifier.auth_invalid.emit()
+                    return
+                if r.ok and username:
+                    notifier.login_valid.emit(api_key, username, session_token or "")
             except Exception as e:
                 log.warning("Refresh server runs failed: %s", e)
                 profile = {}
@@ -1316,6 +1387,50 @@ class App:
             notifier.ready.emit(active_runs, run_history, deleted_runs)
 
         threading.Thread(target=_fetch, daemon=True).start()
+
+    def _handle_invalid_login(self):
+        from core.credentials import delete_api_key
+        from gui.boss_tracker import _load_settings, _save_settings
+        try:
+            delete_api_key()
+            settings = _load_settings()
+            settings["session_token"] = ""
+            settings["username"] = ""
+            _save_settings(settings)
+        except Exception:
+            log.exception("Failed to clear invalid QuestLog login state")
+        self._api = None
+        if self._ql_sync:
+            try:
+                self._ql_sync.stop()
+            except Exception:
+                pass
+            self._ql_sync = None
+        if self._tracker:
+            self._tracker._api = None
+            try:
+                self._tracker.build_planner_tab.set_api(None)
+            except Exception:
+                pass
+        self._selector_win._widget.set_logged_out()
+        self._selector_win._widget.set_server_runs([], [], [])
+        log.info("QuestLog login cleared after server rejected the stored API key")
+
+    def _handle_restored_login_valid(self, api_key, username, session_token):
+        from core.api_client import QuestLogClient
+        self._api = QuestLogClient(api_key, session_token or "")
+        self._selector_win._widget.set_api(self._api)
+        self._selector_win._widget.set_logged_in(username)
+        if self._tracker:
+            self._tracker._api = self._api
+            try:
+                self._tracker.build_planner_tab.set_api(self._api)
+            except Exception:
+                pass
+            if self._active_slug and self._active_questlog_token == (session_token or "") and not self._ql_sync:
+                log.info("Restarting active run after QuestLog login validation so heartbeat can start")
+                self._launch_run(self._active_slug)
+        log.info("QuestLog login restored for %r after profile validation", username)
 
     def _open_settings(self):
         if self._tracker:

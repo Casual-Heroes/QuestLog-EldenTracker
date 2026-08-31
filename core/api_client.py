@@ -7,6 +7,7 @@ import secrets
 import re
 import threading
 import time
+import uuid
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode, urlparse, parse_qs, quote
@@ -223,12 +224,18 @@ class QuestLogClient:
         Blocking — call from thread.
         Returns dict with keys: active_runs, run_history, builds (each a list).
         """
+        if not self._api_key:
+            log.info("get_profile skipped: no QuestLog API key")
+            return {"error": "missing_api_key", "auth_invalid": True}
         try:
             r = self._http.get(
                 f"{BASE_URL}/api/soulslike/desktop/profile/",
                 headers=self._key_header,
                 timeout=10,
             )
+            if r.status_code == 401:
+                log.warning("get_profile rejected: invalid QuestLog API key")
+                return {"error": "invalid_api_key", "auth_invalid": True}
             return r.json() if r.ok else {}
         except Exception as e:
             log.warning("get_profile failed: %s", e)
@@ -242,6 +249,9 @@ class QuestLogClient:
         api_key only, no session_token), which is exactly when the Build
         Planner tab on the run-selector screen needs it.
         """
+        if not self._api_key:
+            log.info("get_builds skipped: no QuestLog API key")
+            return []
         try:
             r = self._http.get(
                 f"{BASE_URL}/api/soulslike/desktop/builds/",
@@ -250,7 +260,10 @@ class QuestLogClient:
                 timeout=10,
             )
             if not r.ok:
-                log.warning("get_builds non-200: status=%d body=%r", r.status_code, r.text[:300])
+                if r.status_code == 401:
+                    log.warning("get_builds rejected: invalid QuestLog API key")
+                else:
+                    log.warning("get_builds non-200: status=%d body=%r", r.status_code, r.text[:300])
                 return []
             return r.json().get('builds', [])
         except Exception as e:
@@ -571,11 +584,15 @@ class QuestLogClient:
 
         items — list of {"name": str, "type": str} dicts seeded from the build.
         """
+        current_token = str(self._session_token or "")
+        client_run_nonce = uuid.uuid4().hex
         payload = {
             "game":        game,
             "game_mode":   game_mode,
             "build_name":  build_name,
             "timing_mode": "listener",
+            "force_new": True,
+            "client_run_nonce": client_run_nonce,
         }
         if items:
             payload["items"] = [
@@ -594,7 +611,38 @@ class QuestLogClient:
                 headers=self._key_header,
                 timeout=10,
             )
-            return r.json() if r.ok else {}
+            if not r.ok:
+                log.warning("create_session rejected: status=%s body=%r", r.status_code, r.text[:300])
+                try:
+                    return r.json()
+                except Exception:
+                    return {"error": f"HTTP {r.status_code}"}
+            data = r.json() if r.content else {}
+            returned_token = (
+                data.get("token")
+                or data.get("session_token")
+                or data.get("run_token")
+                or ""
+            )
+            if returned_token:
+                data["token"] = returned_token
+            if current_token and returned_token and returned_token == current_token:
+                log.warning(
+                    "create_session returned the currently connected token %s; refusing old-session attach",
+                    returned_token[:8],
+                )
+                return {
+                    "error": (
+                        "QuestLog returned the currently connected run instead of a new run. "
+                        "Refresh runs or end/delete the old run, then try again."
+                    ),
+                    "reused_token": returned_token,
+                }
+            data["_created_from_app"] = True
+            data["_client_run_nonce"] = client_run_nonce
+            log.info("create_session ok token=%s name=%r game=%s mode=%s",
+                     returned_token[:8] if returned_token else "none", build_name, game, game_mode)
+            return data
         except Exception as e:
             log.warning("create_session failed: %s", e)
             return {}

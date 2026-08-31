@@ -452,6 +452,7 @@ class QuestLogSync:
             return
         timer_rebase = None
         with self._lock:
+            was_paused = self._is_paused
             if "is_paused" in status:
                 self._is_paused = bool(status.get("is_paused"))
             if status.get("session_state") is not None:
@@ -462,6 +463,8 @@ class QuestLogSync:
                     self._paused_streak_sec = int(now - self._life_start_ts)
                     self._paused_survival_sec = self._total_survival_sec + (now - self._life_start_ts)
                 self._life_start_ts = None
+            elif was_paused and self._game_active and self._life_start_ts is None:
+                self._life_start_ts = time.time() - max(0, int(self._paused_streak_sec or 0))
             if isinstance(status.get("timer_rebase"), dict):
                 timer_rebase = dict(status.get("timer_rebase"))
         if timer_rebase:
@@ -785,6 +788,7 @@ class QuestLogSync:
         threading.Thread(target=self._post_pause_state, args=(True,), daemon=True).start()
 
     def resume(self):
+        self._apply_pause_status({"is_paused": False, "session_state": "active"})
         threading.Thread(target=self._post_pause_state, args=(False,), daemon=True).start()
 
     def _post_pause_state(self, paused):

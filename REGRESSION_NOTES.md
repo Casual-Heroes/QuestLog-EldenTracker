@@ -31,6 +31,28 @@ behavior, and do not reintroduce the old local fallback behavior.
 - Do not calculate `Boss Deaths` by adding `session_deaths`; session deaths
   are already included in the server totals.
 
+## QuestLog Run Identity
+
+- Never auto-attach a login to the first active QuestLog run. Multiple active
+  Reforged runs can exist, so game/mode matching is not enough.
+- Login may only restore cloud sync when the currently open local run already
+  has the exact same `questlog_token`.
+- Startup may delay showing the logged-in UI until profile validation, but it
+  must still create the internal API client immediately. Otherwise launching a
+  cloud-linked run during validation skips `QuestLogSync`, which means no
+  heartbeat, no current streak, no items, and a broken overlay.
+- Creating a new QuestLog run must request a fresh server session and must
+  refuse any response token that is already the current token, already linked
+  to a local run, or already shown in the server active/history lists.
+
+## QuestLog Pause State
+
+- `pause()` and `resume()` must both update local state immediately, then let
+  the server confirm or roll back.
+- Resuming while the game is still running must restore `_life_start_ts` from
+  the banked paused streak. Otherwise Current Streak, Longest Life, death
+  payloads, and overlay timers can diverge from the site.
+
 ## Live Save Tracking
 
 - The selected character save in Settings/Run Selector wins when launching a
